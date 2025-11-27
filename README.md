@@ -72,7 +72,7 @@ Additional master script is developed in bash to orchestrate the full pipeline f
 
 ## Citation
 If you use this tool in your research, please cite:
-> Tamer A. Mansour. "A Context-Aware Computational Pipeline for High-Precision Remapping of Genotyping Arrays: Updating the Equine80select Manifest to EquCab3." *[Journal Name]*, 2025.
+> Tamer A. Mansour. "A Context-Aware Computational Pipeline for High-Precision Remapping of Genotyping Arrays: Updating the Equine80select Manifest to EquCab3." https://github.com/drtamermansour/Equine80select_remapper, 2025.
 
 ## License
 MIT License
