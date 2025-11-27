@@ -58,7 +58,7 @@ samtools faidx $equCab3_ref
 cd "$work_dir"
 
 #mkdir tmpX && mv *.txt *remapped* temp_* equCab3.mismatches tmpX/.
-python scripts/remap_manifest_v18.py \
+python scripts/remap_manifest.py \
     -i $origManifest \
     -r $equCab3_ref \
     -o Equine80select_24_20067593_B1_remapped.csv
