@@ -15,7 +15,7 @@ conda activate remap
 mamba install -c bioconda pysam samtools bcftools
 mamba install -c conda-forge pandas
 
-mkdir -p equCab3_remap && cd equCab3_remap
+mkdir -p Equine80select_remapper && cd Equine80select_remapper
 work_dir=$(pwd)
 parentageDir=$work_dir/../Horse_parentage_SNPs
 
@@ -245,8 +245,8 @@ paste _tmp.snp_alleles _tmp.mapped_alleles_final _tmp.mapped_alleles_final_compl
     else if($1==$6 && $2==$8 && $3==$7) print $4,$5,$6,$2","$3,$8","$7,$7,$7;  
     else if($1==$6 && $2==$9 && $3==$10) print $4,$5,$6,$2","$3,$7","$8,$9,$7;  
     else if($1==$6 && $2==$10 && $3==$9) print $4,$5,$6,$2","$3,$8","$7,$9,$7;  
-    else print "Error",$0}' > matchingSNPs_binary_consistantMapping.map
-grep "^Error" matchingSNPs_binary_consistantMapping.map | wc -l ## 0
+    else print "Error",$0}' > matchingSNPs_binary_consistantMapping.EquCab3_map
+grep "^Error" matchingSNPs_binary_consistantMapping.EquCab3_map | wc -l ## 0
 
 
 #################################
