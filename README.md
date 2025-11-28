@@ -1,7 +1,7 @@
 # Equine80select Remapping Pipeline (EquCab2 to EquCab3)
 
 ## Overview
-This repository contains a comprehensive computational pipeline designed to remap the **Equine80select genotyping array** from the legacy *EquCab2* reference genome to the modern *EquCab3* assembly.
+This repository contains a computational pipeline designed to remap the **Equine80select genotyping array** from the legacy *EquCab2* reference genome to the modern *EquCab3* assembly.
 
 Standard probe alignment often fails in repetitive regions or inverted loci. This pipeline utilizes a **"Context-Aware" Dual-Alignment strategy**, aligning both the short physical probe (50bp) and the longer genomic context (`TopGenomicSeq`) to ensure high-fidelity coordinate conversion, correct strand assignment, and precise reference/alternative allele determination consistent with VCF standards.
 
@@ -13,7 +13,6 @@ Standard probe alignment often fails in repetitive regions or inverted loci. Thi
 * **Quality Control (QC) & Filtration:** Includes post-processing steps to identify and filter markers with array design conflicts, polymorphic site interference, or low mapping quality.
 
 ## Prerequisites
-* **Linux/macOS**
 * **Conda** or **Mamba** package manager installed.
 * **EquCab3 Reference Genome** (FASTA format).
 
@@ -23,12 +22,12 @@ The entire workflow is orchestrated by a master Bash script (`master_pipeline.sh
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/your-username/equine80-remap.git](https://github.com/your-username/equine80-remap.git)
+    git clone [https://github.com/your-username/equine80-remap.git](https://github.com/drtamermansour/Equine80select_remapper.git)
     cd equine80-remap
     ```
 
 2.  **Run the Pipeline:**
-    The script will automatically create the necessary Conda environment, run the remapping tool, and perform quality filtration.
+    The script will create the necessary Conda environment, run the remapping tool, and perform quality filtration.
 
     ```bash
     # Make the script executable
@@ -45,7 +44,7 @@ The entire workflow is orchestrated by a master Bash script (`master_pipeline.sh
 ## Pipeline Methodology
 
 ### 1. The Core Remapping Tool (Python)
-The internal Python tool (`remap_manifest_final.py`) performs the heavy lifting:
+The internal Python tool (`remap_manifest.py`) performs the heavy lifting:
 * **Dual Alignment:** Aligns both `AlleleA_ProbeSeq` and `TopGenomicSeq` using `minimap2`.
 * **Ref/Alt Determination:** Compares alignments of Allele A and Allele B contexts to computationally determine the Reference allele on EquCab3.
 * **Strand Resolution:** Prioritizes the `TopGenomicSeq` strand to prevent allele flipping errors.
@@ -63,12 +62,13 @@ Filters include:
 
 The pipeline generates the following files in the output directory:
 
-* **`Equine80_EquCab3_Full.csv`**: The raw remapped manifest containing all markers, including strand, coordinates, and MAPQ scores.
-* **`Equine80_EquCab3_Filtered.csv`**: A high-quality subset of markers passing all QC filters, ready for downstream analysis (plink/imputation).
+* **`Equine80select_24_20067593_B1_remapped.csv`**: The raw remapped manifest containing all markers, including strand, coordinates, and MAPQ scores.
+* **`_matchingSNPs.vcf`**: The remapped markers in VCF format  after exclusion of markers that failed to match the array design after remapping.
+* **`_matchingSNPs_binary.vcf`**: additional exclusion of polymorphic sites.
+* **`_matchingSNPs_binary_consistantMapping.vcf`**: additional exclusion of markers with low-quality probes.
+* **`matchingSNPs_binary_consistantMapping.EquCab3_map`**: A final map file for a high-quality subset of markers passing all QC filters.
 * **`QC_Report.txt`**: A summary log detailing how many markers were removed at each filtration step.
 
-## Code Availability
-Additional master script is developed in bash to orchestrate the full pipeline from installing dependencies, running the python script, and filtering the low quality marker.
 
 ## Citation
 If you use this tool in your research, please cite:
