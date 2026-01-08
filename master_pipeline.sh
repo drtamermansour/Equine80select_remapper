@@ -248,6 +248,10 @@ paste _tmp.snp_alleles _tmp.mapped_alleles_final _tmp.mapped_alleles_final_compl
     else print "Error",$0}' > matchingSNPs_binary_consistantMapping.EquCab3_map
 grep "^Error" matchingSNPs_binary_consistantMapping.EquCab3_map | wc -l ## 0
 
+module load rclone
+rclone -v copy _matchingSNPs_binary_consistantMapping.vcf "remote_UCDavis_GoogleDr:STR_Imputation_2025/outputs/Equine80select_manifest_remapped/" --drive-shared-with-me
+rclone -v copy Equine80select_remapped_equCab3.bim "remote_UCDavis_GoogleDr:STR_Imputation_2025/outputs/Equine80select_manifest_remapped/" --drive-shared-with-me
+rclone -v copy matchingSNPs_binary_consistantMapping.EquCab3_map "remote_UCDavis_GoogleDr:STR_Imputation_2025/outputs/Equine80select_manifest_remapped/" --drive-shared-with-me
 
 #################################
 
@@ -293,7 +297,7 @@ wc -l *_molly_equCab3.bim
 # Compare the two remapping results
 comm -12 <(cat Equine80select_molly_equCab3.bim | cut -d$'\t' -f2 | sort) <(cat Equine80select_remapped_equCab3.bim | cut -d$'\t' -f2 | sort) | wc -l  ## 75684 shared 
 comm -12 <(cat Equine80select_molly_equCab3.bim | cut -d$'\t' -f2 | sort) <(cat Equine80select_remapped_equCab3.bim | cut -d$'\t' -f2 | sort) > molly_remapped_common_snps.txt
-comm -12 <(cat molly_remapped_common_snps.txt | grep -Fwf - Equine80select_molly_equCab3.bim | sort) <(cat molly_remapped_common_snps.txt | grep -Fwf - Equine80select_remapped_equCab3.bim | sort) | wc -l  ## 76053
+comm -12 <(cat molly_remapped_common_snps.txt | grep -Fwf - Equine80select_molly_equCab3.bim | sort) <(cat molly_remapped_common_snps.txt | grep -Fwf - Equine80select_remapped_equCab3.bim | sort) | wc -l  ## 75649 shared with same SNP ID, chr and pos
 comm -12 <(cat molly_remapped_common_snps.txt | grep -Fwf - Equine80select_molly_equCab3.bim | sort) <(cat molly_remapped_common_snps.txt | grep -Fwf - Equine80select_remapped_equCab3.bim | sort) | cut -d$'\t' -f2 > molly_remapped_matching_snps.txt
 paste <(cat molly_remapped_matching_snps.txt | grep -vFwf - molly_remapped_common_snps.txt | grep -Fwf - Equine80select_molly_equCab3.bim | sort -k2,2) <(cat molly_remapped_matching_snps.txt | grep -vFwf - molly_remapped_common_snps.txt | grep -Fwf - Equine80select_remapped_equCab3.bim | sort -k2,2) | head
 
