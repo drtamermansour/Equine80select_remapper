@@ -57,7 +57,15 @@ samtools faidx $equCab3_ref
 # Run the remapping steps
 cd "$work_dir"
 
-#mkdir tmpX && mv *.txt *remapped* temp_* equCab3.mismatches tmpX/.
+
+## Detailed pseudo-code for remap_manifest.py can be found in scripts/remap_manifest_psCode.txt
+## scripts/remap_manifest.py add these columns to the manifest:
+## Chr_EquCab3: chr on equCab3 based on 'TopGenomicSeq' alignment
+## MapInfo_EquCab3: bp position on equCab3 (based primarily on Probe alignment; Fallback to TopGenomicSeq CIGAR.)
+## Strand_EquCab3: SAM Flag from the 'TopGenomicSeq' alignment.
+## Ref_EquCab3 & Alt_EquCab3: chosen from alleleA and alleleB obtained from 'TopGenomicSeq' e.g., "AGCT[A/G]TCGA"
+## MAPQ_TopGenomicSeq: Mapping Quality score directly from the minimap2 alignment of the winning TopGenomicSeq candidate.
+## MAPQ_Probe: The Mapping Quality score of the selected probe alignment. If no valid probe overlap was found (fallback used), this is set to 0.
 python scripts/remap_manifest.py \
     -i $origManifest \
     -r $equCab3_ref \
@@ -72,19 +80,110 @@ grep IlmnID Equine80select_24_20067593_B1_remapped.csv | tr ',' '\n' > temp_expl
 grep -A1 IlmnID Equine80select_24_20067593_B1_remapped.csv | tail -n1 | tr ',' '\n' > temp_explore/4.txt
 paste temp_explore/1.txt temp_explore/2.txt temp_explore/3.txt temp_explore/4.txt
 
+## Find the possiblities of output Strand_EquCab3 ($22)
+tail -n+2 Equine80select_24_20067593_B1_remapped.csv | awk -F, '{print $22}' | sort | uniq -c
+##  40521 +
+##  41424 -
+##     29 N/A ## These records has N in the output Ref_EquCab3 & Alt_EquCab3 ($23 & $24); likely failed to align 
+
+
+## annotate records where SNP ($4) != alleles reported in TopGenomicSeq ($18)
+python scripts/check_snps.py -i Equine80select_24_20067593_B1_remapped.csv -a temp_explore/annotated_discrepancies_manifest.csv -o temp_explore/check_output.csv
+tail -n+2 temp_explore/check_output.csv | sort | uniq -c > temp_explore/check_output.groups
+## Example output
+##    269 BOT,BOT,+,[C/T],[A/G],[A/G]
+##      3 BOT,BOT,,[G/T],[A/C],[A/C]
+##   4360 BOT,BOT,-,[G/T],[A/C],[A/C]
+##  14510 BOT,TOP,+,[C/T],[A/G],[A/G]
+##   3696 BOT,TOP,+,[G/T],[A/C],[A/C]
+##      6 MINUS,PLUS,+,[D/I],[-/CAGAAAAGAAG],[A/C/G/T]
+
+
+## Conclusion:
+## The remapping script should do the following:
+## 1. Exclude records with N/A in Strand_EquCab3 ($22) from further analysis
+## 2. For now, we can discard records with indels (I/D) in SNPs ($4) as they are few and complex to handle
+## 3. if the PLINK output is not using the same manifest alleles ($4), exclude ambiguous SNPs, then:
+##    a. if SNP alleles ($4) match TopGenomicSeq alleles ($18) && Strand_EquCab3 ($22) == +, use SNP alleles as is
+##    b. if SNP alleles ($4) match TopGenomicSeq alleles ($18) && Strand_EquCab3 ($22) == -, complement SNP alleles
+##    c. if SNP alleles ($4) do not match TopGenomicSeq alleles ($18) && Strand_EquCab3 ($22) == +, complement SNP alleles
+##    d. if SNP alleles ($4) do not match TopGenomicSeq alleles ($18) && Strand_EquCab3 ($22) == -, use SNP alleles as is
+## Otherwise decide if the SNP alleles ($4) should be used as is or be complemented (without matching the alleles to avoid mistakes of ambiguos SNPs):
+##    a. IlmnStrand ($3) == SourceStrand ($16) && SourceSeq ($17) == TopGenomicSeq ($18) && Strand_EquCab3 ($22) == +  => use SNP alleles as is
+##    b. IlmnStrand ($3) == SourceStrand ($16) && SourceSeq ($17) == TopGenomicSeq ($18) && Strand_EquCab3 ($22) == -  => complement SNP alleles
+##    c. IlmnStrand ($3) != SourceStrand ($16) && SourceSeq ($17) == TopGenomicSeq ($18) && Strand_EquCab3 ($22) == +  => complement SNP alleles
+##    d. IlmnStrand ($3) != SourceStrand ($16) && SourceSeq ($17) == TopGenomicSeq ($18) && Strand_EquCab3 ($22) == -  => use SNP alleles as is
+##    e. IlmnStrand ($3) == SourceStrand ($16) && SourceSeq ($17) != TopGenomicSeq ($18) && Strand_EquCab3 ($22) == +  => complement SNP alleles
+##    f. IlmnStrand ($3) == SourceStrand ($16) && SourceSeq ($17) != TopGenomicSeq ($18) && Strand_EquCab3 ($22) == -  => use SNP alleles as is
+##    g. IlmnStrand ($3) != SourceStrand ($16) && SourceSeq ($17) != TopGenomicSeq ($18) && Strand_EquCab3 ($22) == +  => use SNP alleles as is
+##    h. IlmnStrand ($3) != SourceStrand ($16) && SourceSeq ($17) != TopGenomicSeq ($18) && Strand_EquCab3 ($22) == -  => complement SNP alleles
+
+## Apply the above logic to summarize the number of records that should use SNP alleles as is or be complemented
+tail -n+2 temp_explore/annotated_discrepancies_manifest.csv | awk -F, 'BEGIN{OFS="\t";a["as_is"]=0; a["complement"]=0; b=0} {
+if($22=="N/A") next;
+if($28=="[D/I]") next;
+if($3==$16 && $17==$18 && $22=="+") a["as_is"]+=1;
+    else if($3==$16 && $17==$18 && $22=="-") a["complement"]+=1;
+    else if($3!=$16 && $17==$18 && $22=="+") a["complement"]+=1;
+    else if($3!=$16 && $17==$18 && $22=="-") a["as_is"]+=1;
+    else if($3==$16 && $17!=$18 && $22=="+") a["complement"]+=1;
+    else if($3==$16 && $17!=$18 && $22=="-") a["as_is"]+=1;
+    else if($3!=$16 && $17!=$18 && $22=="+") a["as_is"]+=1;
+    else if($3!=$16 && $17!=$18 && $22=="-") a["complement"]+=1;
+
+if($3==$16 && $17==$18 && $28!=$29) {b+=1;print $0",st1"}
+    else if($3!=$16 && $17==$18 && $30!=$29) {b+=1;print $0",st2"}
+    else if($3==$16 && $17!=$18 && $30!=$29) {b+=1;print $0",st3"}
+    else if($3!=$16 && $17!=$18 && $28!=$29) {b+=1;print $0",st4"}
+
+} END {for(i in a) print i,a[i]; print "Total mismatches:",b}' 
+## complement      37798
+## as_is   44008
+## Total mismatches:       0
+
+tail -n+2 temp_explore/annotated_discrepancies_manifest.csv | awk -F, 'BEGIN{OFS="\t";a["as_is"]=0; a["complement"]=0; b=0} {
+if($22=="N/A") next;
+if($28=="[D/I]" && $3==$16 && $17==$18 && $22=="+") print $2,"indel_as_is";
+else if($28=="[D/I]" && $3==$16 && $17==$18 && $22=="-") print $2,"indel_complement";
+else if($28=="[D/I]" && $3!=$16 && $17==$18 && $22=="+") print $2,"indel_complement";
+else if($28=="[D/I]" && $3!=$16 && $17==$18 && $22=="-") print $2,"indel_as_is";
+else if($28=="[D/I]" && $3==$16 && $17!=$18 && $22=="+") print $2,"indel_complement";
+else if($28=="[D/I]" && $3==$16 && $17!=$18 && $22=="-") print $2,"indel_as_is";
+else if($28=="[D/I]" && $3!=$16 && $17!=$18 && $22=="+") print $2,"indel_as_is";
+else if($28=="[D/I]" && $3!=$16 && $17!=$18 && $22=="-") print $2,"indel_complement";
+else if($3==$16 && $17==$18 && $22=="+") print $2,"as_is";
+else if($3==$16 && $17==$18 && $22=="-") print $2,"complement";
+else if($3!=$16 && $17==$18 && $22=="+") print $2,"complement";
+else if($3!=$16 && $17==$18 && $22=="-") print $2,"as_is";
+else if($3==$16 && $17!=$18 && $22=="+") print $2,"complement";
+else if($3==$16 && $17!=$18 && $22=="-") print $2,"as_is";
+else if($3!=$16 && $17!=$18 && $22=="+") print $2,"as_is";
+else if($3!=$16 && $17!=$18 && $22=="-") print $2,"complement";
+}' > allele_usage_decision.txt
+
 
 #####################
 ## Benchmark aganist the already known EquCab3 markers 
 mkdir -p remap_assessment
-## Summary statistics of input EquCab2 and EquCab3 markers of the manifest
+## Summary statistics of input EquCab2 and EquCab3 markers of the original manifest
 cat Equine80select_24_20067593_B1_remapped.csv | awk 'BEGIN{FS=OFS=","}{print $9}' | sort | uniq -c
 #  75952 2.0
 #   6022 3.0
 
+## Summary statistics of remapping results ($20 is the new Chr_EquCab3)
 cat Equine80select_24_20067593_B1_remapped.csv | awk 'BEGIN{FS=OFS=","}{print $20}' | sort | uniq -c | awk '{if($2==0) print}'  ## 29 with 0 value (i.e. failed to remap)
 cat Equine80select_24_20067593_B1_remapped.csv | awk 'BEGIN{FS=OFS=","}{print $20}' | grep Un | wc -l ## 644 assigned to chrUn
 
-#cat Equine80select_24_20067593_B1_remapped.csv | awk 'BEGIN{FS=OFS=","}{if($9==3)print $4,$3"/"$16,$22}' | sort | uniq -c > remap_assessment/equCab3.metadata_counts
+
+#$9=Original_Assembly (2=EquCab2, 3=EquCab3)
+#$2=Name
+#$4=SNP e.g., [A/G] 
+#$10:$11=Chr:MapInfo
+#$3/$16=IlmnStrand/SourceStrand
+#$20:$21=Chr_EquCab3:MapInfo_EquCab3
+#$22=Strand_EquCab3
+
+## confirm that input Chr:MapInfo ($10:$11) matched the output Chr_EquCab3:MapInfo_EquCab3 ($20:$21) for the known EquCab3 markers only ($9==3)
 cat Equine80select_24_20067593_B1_remapped.csv | awk 'BEGIN{FS=OFS=","}{if($9==3)print $2,$4,$10":"$11,$3"/"$16,$20":"$21,$22}' | awk 'BEGIN{FS=","}{if($3==$5)print}' | wc -l ## 5949 remapped correctly
 cat Equine80select_24_20067593_B1_remapped.csv | awk 'BEGIN{FS=OFS=","}{if($9==3)print $2,$4,$10":"$11,$3"/"$16,$20":"$21,$22}' | awk 'BEGIN{FS=","}{if($3!=$5)print}' > remap_assessment/equCab3.mismatches
 cat remap_assessment/equCab3.mismatches | wc -l ## 73
@@ -231,22 +330,37 @@ cat inconsistent_probes | grep -vFwf - _matchingSNPs_binary.vcf > _matchingSNPs_
 grep -v "^#" _matchingSNPs_binary_consistantMapping.vcf | wc -l ## 80197
 grep -v "^#" _matchingSNPs_binary_consistantMapping.vcf | cut -f1 | sort | uniq -c | grep Un_ | wc -l ## 116
 grep -v "^#" _matchingSNPs_binary_consistantMapping.vcf | awk 'BEGIN{FS=OFS="\t"}{print $1,$3,"0",$2,$4,$5}' | sort -k1,1d -k4,4n > Equine80select_remapped_equCab3.bim ## 80223
+
+## Final check of allele types
+cat Equine80select_remapped_equCab3.bim | awk -F"\t" '{if($5=="A" && $6=="T" || $5=="T" && $6=="A" || $5=="C" && $6=="G" || $5=="G" && $6=="C")a+=1} END {print "Total ambiguous:",a}' ## Total ambiguous: 279
 ######################################################
 ## Create final map 
-## Note: No need for EquCab2 coordinates because we can map byt SNP_ids (For EquCab2 coordinates, merge with the manifest)
-## chr \t pos \t snpID \t SNP_alleles \t genomic_alleles \t SNP_ref_alleles \t genomic_ref_allele
+## Note: No need for EquCab2 coordinates because we can map by SNP_ids (For EquCab2 coordinates, merge with the manifest)
+## chr \t pos \t snpID \t SNP_alleles \t genomic_alleles \t SNP_ref_allele \t genomic_ref_allele \t allele_usage_decision
 ## This map allows remapping to the same SNP alleles or PosStrand_alleles (i.e., VCF alleles). 
 ## In either case, their is a ref_allele to use in PLINK2
+
+## This code creates mutliple intermediate files:
+## _tmp.matchingSNPs_binary_consistantMapping.snpIDs : list of SNP IDs in the final VCF
+## _tmp.snp_alleles : SNP IDs and their alleles from the SNP column of the manifest (e.g., 21962991_Curly_f_ilmndup1   A   G)
+## _tmp.mapped_alleles_final : SNP IDs and their remapped alleles on the + strand (e.g., 11      21962991        21962991_Curly_f_ilmndup1       G       A)
+## _tmp.mapped_alleles_final_complementary : SNP IDs and their remapped alleles on the - strand (e.g., C       T)
+## allele_usage_decision.txt (already generated before): decision on whether to use the SNP alleles as is or be complemented
+## matchingSNPs_binary_consistantMapping.EquCab3_map : final map file
+## The code confirms the same SNP ids ($1==$6 && $1== $11) & checks for matches between the SNP alleles from the manifest ($2,$3) and the remapped alleles on + strand ($7,$8) or - strand ($9,$10)
 grep -v "^#" _matchingSNPs_binary_consistantMapping.vcf | cut -f3 > _tmp.matchingSNPs_binary_consistantMapping.snpIDs
 tail -n+2 "$manifest" | cut -d, -f2,4 | awk 'BEGIN{FS=",";OFS="\t"}{gsub(/\[|\]/, "", $2);gsub(/\//, OFS, $2);print $0}' > _tmp.snp_alleles # the SNP name and alleles # 21962991_Curly_f_ilmndup1   A   G
 cat _tmp.mapped_alleles_final | awk 'BEGIN{FS=OFS="\t"}{print $4,$5}' | tr 'TCGA' 'AGCT' > _tmp.mapped_alleles_final_complementary
-paste _tmp.snp_alleles _tmp.mapped_alleles_final _tmp.mapped_alleles_final_complementary | grep -Fwf _tmp.matchingSNPs_binary_consistantMapping.snpIDs | awk 'BEGIN{FS=OFS="\t"}{\
-    if($1==$6 && $2==$7 && $3==$8) print $4,$5,$6,$2","$3,$7","$8,$7,$7;  
-    else if($1==$6 && $2==$8 && $3==$7) print $4,$5,$6,$2","$3,$8","$7,$7,$7;  
-    else if($1==$6 && $2==$9 && $3==$10) print $4,$5,$6,$2","$3,$7","$8,$9,$7;  
-    else if($1==$6 && $2==$10 && $3==$9) print $4,$5,$6,$2","$3,$8","$7,$9,$7;  
+paste _tmp.snp_alleles _tmp.mapped_alleles_final _tmp.mapped_alleles_final_complementary allele_usage_decision.txt | grep -Fwf _tmp.matchingSNPs_binary_consistantMapping.snpIDs | awk 'BEGIN{FS=OFS="\t"}{\
+    if($1==$6 && $1== $11 && $2==$7 && $3==$8 && $12=="as_is") print $4,$5,$6,$2","$3,$7","$8,$7,$7,$12;  
+    else if($1==$6 && $1== $11 && $2==$8 && $3==$7 && $12=="as_is") print $4,$5,$6,$2","$3,$8","$7,$7,$7,$12;  
+    else if($1==$6 && $1== $11 && $2==$9 && $3==$10 && $12=="complement") print $4,$5,$6,$2","$3,$7","$8,$9,$7,$12;  
+    else if($1==$6 && $1== $11 && $2==$10 && $3==$9 && $12=="complement") print $4,$5,$6,$2","$3,$8","$7,$9,$7,$12;  
     else print "Error",$0}' > matchingSNPs_binary_consistantMapping.EquCab3_map
 grep "^Error" matchingSNPs_binary_consistantMapping.EquCab3_map | wc -l ## 0
+cat matchingSNPs_binary_consistantMapping.EquCab3_map | awk '{if($4=="A,T" || $4=="T,A" || $4=="C,G" || $4=="G,C")print}' | \
+    awk '{if(($6!=$7 && $8=="as_is") || ($6==$7 && $8=="complement"))print}' | wc -l ## 0
+
 
 module load rclone
 rclone -v copy _matchingSNPs_binary_consistantMapping.vcf "remote_UCDavis_GoogleDr:STR_Imputation_2025/outputs/Equine80select_manifest_remapped/" --drive-shared-with-me
@@ -254,11 +368,9 @@ rclone -v copy Equine80select_remapped_equCab3.bim "remote_UCDavis_GoogleDr:STR_
 rclone -v copy matchingSNPs_binary_consistantMapping.EquCab3_map "remote_UCDavis_GoogleDr:STR_Imputation_2025/outputs/Equine80select_manifest_remapped/" --drive-shared-with-me
 
 #################################
-
 # Convert Equine80select manifest to Plink BIM file for equCab2 and equCab3 separately with Allele 1 and Allele 2 correspond to REF and ALT alleles respectively.
 tail -n+2 Equine80select_24_20067593_B1_remapped.csv | awk 'BEGIN{FS=",";OFS="\t"}{if($10 && $9=="2")print $10,$2,"0",$11}' | sort -k2,2 > Equine80select2.map  ## 75952
 tail -n+2 Equine80select_24_20067593_B1_remapped.csv | awk 'BEGIN{FS=",";OFS="\t"}{if($10 && $9=="3")print $10,$2,"0",$11}' | sort -k2,2 > Equine80select3.map ## 6022
-
 
 
 #wget https://www.animalgenome.org/repository/pub/UMN2018.1003/MNEc670k.unique_remap.FINAL.csv.gz
