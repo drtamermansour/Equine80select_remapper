@@ -346,8 +346,9 @@ cat Equine80select_remapped_equCab3.bim | awk -F"\t" '{if($5=="A" && $6=="T" || 
 ## _tmp.mapped_alleles_final : SNP IDs and their remapped alleles on the + strand (e.g., 11      21962991        21962991_Curly_f_ilmndup1       G       A)
 ## _tmp.mapped_alleles_final_complementary : SNP IDs and their remapped alleles on the - strand (e.g., C       T)
 ## allele_usage_decision.txt (already generated before): decision on whether to use the SNP alleles as is or be complemented
-## matchingSNPs_binary_consistantMapping.EquCab3_map : final map file
+## matchingSNPs_binary_consistantMapping.EquCab3_map : final map file (chr \t pos \t snpID \t SNP_alleles \t genomic_alleles \t SNP_ref_alleles \t genomic_ref_allele \t allele_usage_decision)
 ## The code confirms the same SNP ids ($1==$6 && $1== $11) & checks for matches between the SNP alleles from the manifest ($2,$3) and the remapped alleles on + strand ($7,$8) or - strand ($9,$10)
+## Note that the output "SNP_alleles" & "genomic_alleles" in the map file are always in the order (i.e., Allele1 SNP_alleles corresponds to Allele1 genomic_alleles & the same for Allele2)
 grep -v "^#" _matchingSNPs_binary_consistantMapping.vcf | cut -f3 > _tmp.matchingSNPs_binary_consistantMapping.snpIDs
 tail -n+2 "$manifest" | cut -d, -f2,4 | awk 'BEGIN{FS=",";OFS="\t"}{gsub(/\[|\]/, "", $2);gsub(/\//, OFS, $2);print $0}' > _tmp.snp_alleles # the SNP name and alleles # 21962991_Curly_f_ilmndup1   A   G
 cat _tmp.mapped_alleles_final | awk 'BEGIN{FS=OFS="\t"}{print $4,$5}' | tr 'TCGA' 'AGCT' > _tmp.mapped_alleles_final_complementary
