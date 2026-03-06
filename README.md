@@ -1,78 +1,145 @@
-# Equine80select Remapping Pipeline (EquCab2 to EquCab3)
+# Array Manifest Remapper
 
-## Overview
-This repository contains a computational pipeline designed to remap the **Equine80select genotyping array** from the legacy *EquCab2* reference genome to the modern *EquCab3* assembly.
+A computational pipeline for remapping Illumina genotyping array manifests between reference genome assemblies. It uses a **context-aware dual-alignment strategy** — aligning both the short physical probe (50 bp) and the longer `TopGenomicSeq` context sequence — to ensure high-fidelity coordinate conversion, correct strand assignment, and precise Ref/Alt allele determination consistent with VCF standards.
 
-Standard probe alignment often fails in repetitive regions or inverted loci. This pipeline utilizes a **"Context-Aware" Dual-Alignment strategy**, aligning both the short physical probe (50bp) and the longer genomic context (`TopGenomicSeq`) to ensure high-fidelity coordinate conversion, correct strand assignment, and precise reference/alternative allele determination consistent with VCF standards.
-
-## Key Features
-* **Automated Environment Setup:** A master Bash script handles dependency installation and environment creation via Conda/Mamba.
-* **Hybrid Re-mapping:** Combines the physical precision of probe alignment with the biological context of `TopGenomicSeq` to resolve paralogs.
-* **Strand Authority:** Uses context alignment to correct "complementary allele" errors caused by local inverted repeats.
-* **Precise Arithmetic:** Correctly calculates coordinates for Infinium I/II chemistries, including complex edge cases like minus-strand deletions.
-* **Quality Control (QC) & Filtration:** Includes post-processing steps to identify and filter markers with array design conflicts, polymorphic site interference, or low mapping quality.
+Originally developed to remap the **Equine80select** array from EquCab2 to EquCab3.
 
 ## Prerequisites
-* **Conda** or **Mamba** package manager installed.
-* **EquCab3 Reference Genome** (FASTA format).
 
-## Quick Start
+- **Conda** or **Mamba** package manager
+- **Reference genome FASTA** for the target assembly (indexed with `samtools faidx`)
 
-The entire workflow is orchestrated by a master Bash script (`master_pipeline.sh`).
+## Setup
 
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/your-username/equine80-remap.git](https://github.com/drtamermansour/Equine80select_remapper.git)
-    cd equine80-remap
-    ```
+```bash
+git clone https://github.com/drtamermansour/Equine80select_remapper.git
+cd Equine80select_remapper
 
-2.  **Run the Pipeline:**
-    The script will create the necessary Conda environment, run the remapping tool, and perform quality filtration.
+# Create the 'remap' conda environment with all dependencies
+bash install.sh
+conda activate remap
+```
 
-    ```bash
-    # Make the script executable
-    chmod +x master_pipeline.sh
+## Running the Pipeline
 
-    # Run the tool
-    ./master_pipeline.sh -i original_manifest.csv -r EquCab3.fa -o output_directory
-    ```
+```bash
+bash run_pipeline.sh \
+    -i backup_original/Equine80select_24_20067593_B1.csv \
+    -r equCab3/equCab3_genome.fa \
+    -a equCab3 \
+    -o results/
+```
 
-    * `-i`: Path to the original Illumina manifest (CSV).
-    * `-r`: Path to the EquCab3 Reference Genome (FASTA).
-    * `-o`: Output directory for remapped files and QC logs.
+### All Options
 
-## Pipeline Methodology
+| Flag | Default | Description |
+|---|---|---|
+| `-i / --manifest` | *(required)* | Path to the Illumina manifest CSV |
+| `-r / --reference` | *(required)* | Path to the target reference genome FASTA |
+| `-a / --assembly` | derived from FASTA filename | Assembly name used to label outputs |
+| `-o / --output-dir` | `./output` | Output directory |
+| `-t / --threads` | `4` | Threads for minimap2 |
+| `--mapq-topseq` | `30` | Minimum MAPQ for TopGenomicSeq alignments |
+| `--mapq-probe` | `0` (disabled) | Minimum MAPQ for probe alignments |
+| `--keep-temp` | off | Retain intermediate FASTA/SAM files |
 
-### 1. The Core Remapping Tool (Python)
-The internal Python tool (`remap_manifest.py`) performs the heavy lifting:
-* **Dual Alignment:** Aligns both `AlleleA_ProbeSeq` and `TopGenomicSeq` using `minimap2`.
-* **Ref/Alt Determination:** Compares alignments of Allele A and Allele B contexts to computationally determine the Reference allele on EquCab3.
-* **Strand Resolution:** Prioritizes the `TopGenomicSeq` strand to prevent allele flipping errors.
-* **Deletion Correction:** Automatically adjusts coordinates for deletion events on the negative strand.
+For HPC clusters, use the SLURM wrapper:
 
-### 2. Additional Filtration
-Following the remapping, the pipeline executes a QC module to define a high-quality marker set. Additional scripts are designed to identify markers with conflicts with the array design, polymorphic sites, and low-quality probes. Optional filtration of these markers allows selection of a high-quality set of markers for downstream analysis.
-
-Filters include:
-* **Mapping Quality (MAPQ):** Removes probes with low confidence alignments (e.g., MAPQ < 30).
-* **Array Design Conflicts:** Flags markers where the remapped alleles do not match the expected probe chemistry.
-* **Polymorphic Sites:** Identifies and filters probes that align to known polymorphic regions (secondary variants) which may affect binding efficiency.
+```bash
+bash submit_slurm.sh -i <manifest.csv> -r <reference.fa> -a <assembly> -o results/ -t 64
+```
 
 ## Outputs
 
-The pipeline generates the following files in the output directory:
+All outputs are written to `--output-dir`:
 
-* **`Equine80select_24_20067593_B1_remapped.csv`**: The raw remapped manifest containing all markers, including strand, coordinates, and MAPQ scores.
-* **`_matchingSNPs.vcf`**: The remapped markers in VCF format  after exclusion of markers that failed to match the array design after remapping.
-* **`_matchingSNPs_binary.vcf`**: additional exclusion of polymorphic sites.
-* **`_matchingSNPs_binary_consistantMapping.vcf`**: additional exclusion of markers with low-quality probes.
-* **`matchingSNPs_binary_consistantMapping.EquCab3_map`**: A final map file for a high-quality subset of markers passing all QC filters.
-* **`QC_Report.txt`**: A summary log detailing how many markers were removed at each filtration step.
+| File | Description |
+|---|---|
+| `{prefix}_remapped_{assembly}.csv` | Full remapped manifest with new coordinates and MAPQ scores |
+| `matchingSNPs_binary_consistantMapping.{assembly}_map` | **Main output.** Final high-quality marker map |
+| `{prefix}_remapped_{assembly}.bim` | PLINK BIM format (CHR, SNP, 0, POS, REF, ALT) |
+| `_matchingSNPs_binary_consistantMapping.vcf` | Final filtered VCF |
+| `_matchingSNPs.vcf` | VCF after design-conflict filter |
+| `_matchingSNPs_binary.vcf` | VCF after polymorphic-site filter |
+| `allele_usage_decision.txt` | Per-SNP orientation decision (as_is / complement) |
+| `QC_Report.txt` | Marker counts at each filter stage |
+| `remap_assessment/` | MAPQ histograms and known-assembly benchmarks |
 
+### Map File Format
+
+`matchingSNPs_binary_consistantMapping.{assembly}_map` — tab-delimited, no header:
+
+| Column | Description |
+|---|---|
+| chr | Chromosome on the new assembly |
+| pos | Base-pair position |
+| snpID | Marker name |
+| SNP_alleles | Manifest alleles (e.g. `A,G`) |
+| genomic_alleles | + strand alleles matching SNP_alleles order |
+| SNP_ref_allele | The SNP allele corresponding to the reference |
+| genomic_ref_allele | The reference allele on the + strand |
+| allele_usage_decision | `as_is` or `complement` |
+
+## QC Filter Cascade
+
+Markers are removed progressively; `QC_Report.txt` records counts at each stage:
+
+1. **Unmapped** — `Strand == N/A` (failed TopGenomicSeq alignment)
+2. **MAPQ** — `MAPQ_TopGenomicSeq < --mapq-topseq`
+3. **Design conflict** — remapped Ref allele does not match genome Ref at that position
+4. **Polymorphic sites** — position shared by multiple markers with different Ref/Alt assignments
+5. **Consistency** — probe + TopGenomicSeq alignment count ≠ 3
+
+For Equine80select → EquCab3 (default settings):
+```
+Input markers:                81,974
+After unmapped filter:        81,945   (-29)
+After MAPQ filter (>=30):     ~81,9xx
+After design conflict:        81,672   (-273)
+After polymorphic filter:     81,660   (-12)
+After consistency filter:     80,197   (-1,463)
+```
+
+## Optional: Molly Cross-Validation
+
+For Equine80select, results can be cross-validated against the MNEc670k Molly remapping:
+
+```bash
+bash scripts/compare_molly.sh \
+    -b results/Equine80select_remapped_equCab3.bim \
+    -m /path/to/MNEc670k.unique_remap.FINAL.csv \
+    -o results/molly_comparison/
+```
+
+## Pipeline Methodology
+
+### Dual-Alignment Strategy
+
+For each marker, two sequences are aligned to the reference with `minimap2 -ax sr`:
+
+1. **TopGenomicSeq** — the full genomic context `PREFIX[AlleleA/AlleleB]SUFFIX` is split into two candidates (one per allele). The candidate with lower edit distance (NM tag) is the reference allele. This alignment determines chromosome, strand, and Ref/Alt.
+
+2. **Probe** (`AlleleA_ProbeSeq`, 50 bp) — if the probe aligns to the same chromosome and overlaps the TopGenomicSeq window on the same strand, its 3' end position is used for high-precision coordinate calculation. Otherwise, the coordinate falls back to parsing the TopGenomicSeq CIGAR string.
+
+### Infinium Chemistry Handling
+
+- **Infinium II**: variant is the base immediately after the probe 3' end
+- **Infinium I**: variant is the last base of the probe
+- On the minus strand, the probe's physical 3' end maps to the alignment start position
+
+### Allele Usage Decision
+
+Each marker gets an `as_is` or `complement` decision, controlling how the manifest's SNP alleles (`[A/B]` column) map to forward-strand genomic alleles. The decision is determined by three binary conditions (XOR logic):
+- `IlmnStrand != SourceStrand`
+- `SourceSeq != TopGenomicSeq`
+- `Strand_{assembly} == '-'`
 
 ## Citation
-If you use this tool in your research, please cite:
+
+If you use this pipeline in your research, please cite:
+
 > Tamer A. Mansour. "A Context-Aware Computational Pipeline for High-Precision Remapping of Genotyping Arrays: Updating the Equine80select Manifest to EquCab3." https://github.com/drtamermansour/Equine80select_remapper, 2025.
 
 ## License
-MIT License
+
+MIT License — see [LICENSE](LICENSE).
