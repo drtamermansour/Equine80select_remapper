@@ -12,7 +12,7 @@ Originally developed to remap the **Equine80select** array from EquCab2 to EquCa
 ## Setup
 
 ```bash
-git clone https://github.com/drtamermansour/Equine80select_remapper.git
+git clone git@github.com:drtamermansour/Equine80select_remapper.git
 cd Equine80select_remapper
 
 # Create the 'remap' conda environment with all dependencies
