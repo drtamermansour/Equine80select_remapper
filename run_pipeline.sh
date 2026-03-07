@@ -21,6 +21,7 @@
 #   --mapq-topseq        Min MAPQ for TopGenomicSeq alignments (default: 30)
 #   --mapq-probe         Min MAPQ for probe alignments when >0 (default: 0 = disabled)
 #   --keep-temp          Keep intermediate FASTA/SAM files
+#   --resume             Skip step 2 if remapped CSV and SAM files already exist
 #   -h / --help          Show this help message
 #
 # Example:
@@ -56,6 +57,7 @@ THREADS=4
 MAPQ_TOPSEQ=30
 MAPQ_PROBE=0
 KEEP_TEMP=""
+RESUME=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 usage() {
@@ -73,6 +75,7 @@ while [[ $# -gt 0 ]]; do
         --mapq-topseq)      MAPQ_TOPSEQ="$2"; shift 2 ;;
         --mapq-probe)       MAPQ_PROBE="$2";  shift 2 ;;
         --keep-temp)        KEEP_TEMP="--keep-temp"; shift ;;
+        --resume)           RESUME=1; shift ;;
         -h|--help)          usage ;;
         *) echo "Unknown argument: $1"; usage ;;
     esac
@@ -138,15 +141,18 @@ fi
 
 # ── Step 2: Core remapping (Python) ──────────────────────────────────────────
 echo ""
-echo "[pipeline] Step 2: Running remap_manifest.py..."
-python "$SCRIPT_DIR/scripts/remap_manifest.py" \
-    -i  "$MANIFEST" \
-    -r  "$REFERENCE" \
-    -o  "$REMAPPED_CSV" \
-    -a  "$ASSEMBLY" \
-    --threads "$THREADS" \
-    --temp-dir "$TEMP_DIR" \
-    ${KEEP_TEMP}
+if [[ -n "$RESUME" && -f "$REMAPPED_CSV" ]]; then
+    echo "[pipeline] Step 2: Skipping remap_manifest.py (--resume: $REMAPPED_CSV already exists)"
+else
+    echo "[pipeline] Step 2: Running remap_manifest.py..."
+    python "$SCRIPT_DIR/scripts/remap_manifest.py" \
+        -i  "$MANIFEST" \
+        -r  "$REFERENCE" \
+        -o  "$REMAPPED_CSV" \
+        -a  "$ASSEMBLY" \
+        --threads "$THREADS" \
+        --temp-dir "$TEMP_DIR"
+fi
 
 # ── Step 3: QC filtering and output generation (Python) ──────────────────────
 echo ""
@@ -163,6 +169,15 @@ python "$SCRIPT_DIR/scripts/qc_filter.py" \
     --prefix      "$PREFIX" \
     --topseq-sam  "$TOPSEQ_SAM" \
     --probe-sam   "$PROBE_SAM"
+
+# ── Cleanup temp files ────────────────────────────────────────────────────────
+if [[ -z "$KEEP_TEMP" ]]; then
+    echo "[pipeline] Cleaning up temp files..."
+    rm -f "$TEMP_DIR/temp_topseq.fasta" \
+          "$TEMP_DIR/temp_probes.fasta" \
+          "$TEMP_DIR/temp_topseq.sam" \
+          "$TEMP_DIR/temp_probe.sam"
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""

@@ -1,0 +1,123 @@
+BEGIN SCRIPT remap_manifest
+
+    # ================= 1. PRE-PROCESSING =================
+    LOAD original_manifest (CSV)
+    
+    FOR EACH row IN manifest:
+        GET Name, AlleleA_ProbeSeq, TopGenomicSeq
+        
+        # Parse TopGenomicSeq to separate the context from the variants
+        # Example: "AGCT[A/G]TCGA" -> Pre="AGCT", A="A", B="G", Post="TCGA"
+        PARSE TopGenomicSeq INTO (Pre, AlleleA, AlleleB, Post)
+        
+        # Construct Candidate Sequences to test against the new reference
+        # Candidate A: Pre + AlleleA + Post
+        # Candidate B: Pre + AlleleB + Post
+        WRITE "Candidate_A" TO temp_topseq.fasta
+        WRITE "Candidate_B" TO temp_topseq.fasta
+        
+        # Write the standard Probe Sequence (usually 50bp)
+        WRITE AlleleA_ProbeSeq TO temp_probes.fasta
+
+    # ================= 2. ALIGNMENT (Minimap2) =================
+    # Align the full context sequences (Candidates) to find the best region match
+    RUN minimap2 on temp_topseq.fasta -> OUTPUT temp_topseq.sam
+    
+    # Align the short probes to find the precise physical end point
+    # Note: Allows secondary alignments (-N 5) to handle repeats
+    RUN minimap2 on temp_probes.fasta -> OUTPUT temp_probe.sam
+
+    # ================= 3. PARSING "TOPSEQ" (Determines Ref/Alt) =================
+    INITIALIZE topseq_results = {}
+
+    FOR EACH marker IN temp_topseq.sam:
+        GET Alignment_Info (Chromosome, Position, Cigar, EditDistance_NM) for Candidate_A
+        GET Alignment_Info (Chromosome, Position, Cigar, EditDistance_NM) for Candidate_B
+        
+        # COMPARE NM (Edit Distance) to decide which allele matches the Reference
+        IF NM_Candidate_B < NM_Candidate_A:
+            # Candidate B is a better match to the genome -> B is REF
+            Winner = Candidate_B
+            Final_Ref = AlleleB
+            Final_Alt = AlleleA
+        ELSE:
+            # Candidate A is equal or better -> A is REF
+            Winner = Candidate_A
+            Final_Ref = AlleleA
+            Final_Alt = AlleleB
+
+        STORE Winner details into topseq_results:
+            - Ref/Alt assignment
+            - Chromosome
+            - Coarse Start/End positions
+            - Strand (from SAM flag)
+
+    # ================= 4. PARSING "PROBES" (Refines Coordinate) =================
+    INITIALIZE probe_candidates = {}
+    
+    FOR EACH alignment IN temp_probe.sam:
+        STORE Chromosome, Pos, Cigar, Strand, MAPQ 
+        CALCULATE End_Position based on Cigar
+
+    # ================= 5. RESOLUTION & COLUMN GENERATION =================
+    FOR EACH marker IN original_manifest:
+        
+        RETRIEVE TopSeq_Result for this marker
+        
+        IF TopSeq_Result EXISTS:
+            # Base data comes from the "Winner" (best matching context)
+            NEW_Chr = TopSeq_Result.Chromosome
+            NEW_Strand = TopSeq_Result.Strand
+            NEW_Ref = TopSeq_Result.Final_Ref
+            NEW_Alt = TopSeq_Result.Final_Alt
+            NEW_MAPQ_Top = TopSeq_Result.MAPQ
+            
+            # --- Coordinate Strategy: Try Probe First, Fallback to TopSeq ---
+            
+            # Step A: Find a Probe alignment that validates the TopSeq result
+            FIND Probe_Alignment WHERE:
+                Probe.Chr == TopSeq_Result.Chr AND
+                Probe overlaps with TopSeq_Result interval
+            
+            IF Found_Probe AND Probe.Strand == TopSeq_Result.Strand:
+                # STRATEGY 1: Use Probe for Precision
+                NEW_MAPQ_Probe = Probe.MAPQ
+                
+                # Calculate exact SNP position relative to Probe 3' end
+                IF Assay_Type == "Inf II":
+                    Raw_Pos = Probe_End + 1
+                ELSE:
+                    Raw_Pos = Probe_End
+                
+                # CORRECTION: Minus Strand Deletions
+                # If Ref is longer than Alt (Deletion) AND Strand is Minus (-):
+                # The alignment end points to the 'start' of the reverse event.
+                # Must subtract deletion length to get true coordinate.
+                IF len(NEW_Ref) > len(NEW_Alt) AND NEW_Strand == "-":
+                    NEW_Pos = Raw_Pos - (len(NEW_Ref) - len(NEW_Alt))
+                ELSE:
+                    NEW_Pos = Raw_Pos
+                    
+            ELSE:
+                # STRATEGY 2: Probe failed/mismatch. Fallback to TopSeq CIGAR.
+                # Walk the CIGAR string of the TopSeq alignment to find the junction.
+                # (The junction is where 'Pre' ends and 'Allele' begins)
+                IF Strand == "+":
+                    Target_Index = Length(Pre)
+                ELSE:
+                    Target_Index = Length(Post)
+                
+                NEW_Pos = CALCULATE_POS_FROM_CIGAR(TopSeq_Result, Target_Index)
+                NEW_MAPQ_Probe = 0 (or NA)
+
+        ELSE:
+            # No alignment found
+            NEW_Chr = "0"
+            NEW_Pos = 0
+            NEW_Ref = "N"
+            NEW_Alt = "N"
+        
+        APPEND Columns to Row
+
+    WRITE Output CSV
+END SCRIPT

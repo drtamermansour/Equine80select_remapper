@@ -285,7 +285,7 @@ def build_final_map(df_final, decisions, assembly, map_path):
 
 def write_mapq_histo(values, bin_size, path):
     """Writes a histogram of MAPQ scores in [low, high, count] format."""
-    if not values:
+    if values.empty:
         return
     bins = defaultdict(int)
     for v in values:

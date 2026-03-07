@@ -42,6 +42,7 @@ bash run_pipeline.sh \
 | `--mapq-topseq` | `30` | Minimum MAPQ for TopGenomicSeq alignments |
 | `--mapq-probe` | `0` (disabled) | Minimum MAPQ for probe alignments |
 | `--keep-temp` | off | Retain intermediate FASTA/SAM files |
+| `--resume` | off | Skip step 2 if the remapped CSV already exists (useful after a step 3 failure) |
 
 For HPC clusters, use the SLURM wrapper:
 

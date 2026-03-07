@@ -23,8 +23,7 @@ Usage:
       -o output_remapped.csv \\
       -a equCab3 \\
       [--threads 4] \\
-      [--temp-dir /tmp/remap] \\
-      [--keep-temp]
+      [--temp-dir /tmp/remap]
 """
 
 import argparse
@@ -54,11 +53,6 @@ def parse_args():
         "--temp-dir",
         default=None,
         help="Directory for temporary FASTA/SAM files (default: same directory as output)",
-    )
-    p.add_argument(
-        "--keep-temp",
-        action="store_true",
-        help="Keep temporary alignment files after completion (useful for debugging)",
     )
     return p.parse_args()
 
@@ -415,14 +409,7 @@ def run_remapping(args):
     print(f"[remap] Writing output: {args.output}")
     df.to_csv(args.output, index=False)
 
-    # ── Cleanup ──────────────────────────────────────────────────────────────
-    if not args.keep_temp:
-        for f in [topseq_fasta, probe_fasta, topseq_sam, probe_sam]:
-            if os.path.exists(f):
-                os.remove(f)
-    else:
-        print(f"[remap] Temp files kept in: {temp_dir}")
-
+    print(f"[remap] Temp files written to: {temp_dir}")
     print("[remap] Done.")
 
 

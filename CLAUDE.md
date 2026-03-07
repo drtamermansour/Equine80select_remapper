@@ -48,7 +48,7 @@ Key steps:
 5. Selects best probe alignment by overlap with TopGenomicSeq window, MAPQ as tiebreaker
 6. Calculates variant position via `get_probe_coordinate()` (probe-based, primary) or `parse_cigar_to_ref_pos()` (TopSeq CIGAR fallback)
 
-**CLI flags:** `-i`, `-r`, `-o`, `-a` (assembly name), `--threads`, `--temp-dir`, `--keep-temp`
+**CLI flags:** `-i`, `-r`, `-o`, `-a` (assembly name), `--threads`, `--temp-dir`, `--keep-temp`, `--resume`
 
 ### `scripts/qc_filter.py`
 
@@ -138,15 +138,17 @@ chr  pos  snpID  SNP_alleles  genomic_alleles  SNP_ref_allele  genomic_ref_allel
 
 1. **Column names depend on `--assembly` flag.** If you pass `-a equCab3`, columns are `Chr_equCab3`. If you pass `-a EquCab3`, they are `Chr_EquCab3`. These must match between `remap_manifest.py` and `qc_filter.py` — `run_pipeline.sh` handles this automatically.
 
-2. **Consistency check requires SAM files.** `qc_filter.py` needs `temp_topseq.sam` and `temp_probe.sam` to perform the consistency filter (step 5). If `--keep-temp` was not used during `remap_manifest.py`, pass `--topseq-sam` and `--probe-sam` explicitly, or the consistency filter is skipped with a warning.
+2. **Resume after step 3 failure.** If `qc_filter.py` fails after `remap_manifest.py` has already completed, re-run with `--resume` to skip the expensive minimap2 alignment step. Temp files (including SAM files) are never deleted until the full pipeline completes successfully, so `--resume` always has access to the SAM files needed for the consistency filter — no special flags required on the original run.
 
-3. **bcftools must be on PATH.** `qc_filter.py` calls `bcftools norm` as a subprocess. Activating the `remap` conda environment provides this.
+3. **Consistency check requires SAM files.** `qc_filter.py` needs `temp_topseq.sam` and `temp_probe.sam` for the consistency filter (step 5). When run via `run_pipeline.sh`, these files always exist at step 3 (they are only deleted at the very end of a successful run). If calling `qc_filter.py` directly on the output of an already-completed pipeline (where temp files were already cleaned up), pass `--topseq-sam` and `--probe-sam` explicitly, or the consistency filter is skipped with a warning.
 
-4. **minimap2 `-ax sr` mode** is designed for short genomic reads (~50–300 bp). Both probes (~50 bp) and TopGenomicSeq (~150 bp) fall in this range.
+4. **bcftools must be on PATH.** `qc_filter.py` calls `bcftools norm` as a subprocess. Activating the `remap` conda environment provides this.
 
-5. **The `Chr` column in the remapped CSV is a string**, not an integer — chromosomes like `Un_NW_*` are valid. Always use `dtype={col_chr: str}` when loading.
+5. **minimap2 `-ax sr` mode** is designed for short genomic reads (~50–300 bp). Both probes (~50 bp) and TopGenomicSeq (~150 bp) fall in this range.
 
-6. **Deletion correction on minus strand.** When a marker is a deletion (len(Ref) > len(Alt)) and the strand is `-`, `remap_manifest.py` subtracts `del_len` from the raw probe coordinate. Do not remove this logic — it reflects the directional asymmetry of probe 3' end positioning.
+6. **The `Chr` column in the remapped CSV is a string**, not an integer — chromosomes like `Un_NW_*` are valid. Always use `dtype={col_chr: str}` when loading.
+
+7. **Deletion correction on minus strand.** When a marker is a deletion (len(Ref) > len(Alt)) and the strand is `-`, `remap_manifest.py` subtracts `del_len` from the raw probe coordinate. Do not remove this logic — it reflects the directional asymmetry of probe 3' end positioning.
 
 ---
 
@@ -160,8 +162,7 @@ bash run_pipeline.sh \
     -r equCab3/equCab3_genome.fa \
     -a equCab3 \
     -o results/ \
-    -t 8 \
-    --keep-temp
+    -t 8
 ```
 
 Expected: ~80,197 markers in `results/matchingSNPs_binary_consistantMapping.equCab3_map`
