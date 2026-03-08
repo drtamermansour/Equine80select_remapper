@@ -118,10 +118,13 @@ def allele_usage_decision(row, strand_col, assembly):
 def get_consistent_snps(topseq_sam_path, probe_sam_path):
     """
     Replicates the existing consistency logic:
-      For each SNP, we expect exactly 3 SAM records:
+      For each SNP, we expect exactly 3 SAM records all mapping to the same chromosome:
         - topseq_A, topseq_B (from temp_topseq.sam, with _A/_B suffix stripped)
         - probe (from temp_probe.sam)
-      SNPs with any other count are flagged as inconsistent.
+      SNPs where any (name, chromosome) pair has a count != 3 are flagged as inconsistent.
+
+    This mirrors the original bash logic:
+      cut -f1,3 | sort | uniq -c | awk '{if($1!=3)print}'
 
     Returns a set of inconsistent SNP names.
     """
@@ -135,9 +138,10 @@ def get_consistent_snps(topseq_sam_path, probe_sam_path):
             flag = int(cols[1])
             if flag & 4:
                 continue
-            # Strip _A / _B suffix
+            # Strip _A / _B suffix; key is (name, chromosome) to detect cross-chrom splits
             name = re.sub(r"_[AB]$", "", cols[0])
-            counts[name] += 1
+            chrom = cols[2]
+            counts[(name, chrom)] += 1
 
     with open(probe_sam_path) as f:
         for line in f:
@@ -147,9 +151,11 @@ def get_consistent_snps(topseq_sam_path, probe_sam_path):
             flag = int(cols[1])
             if flag & 4:
                 continue
-            counts[cols[0]] += 1
+            chrom = cols[2]
+            counts[(cols[0], chrom)] += 1
 
-    return {name for name, cnt in counts.items() if cnt != 3}
+    # A marker is inconsistent if any (name, chrom) pair has count != 3
+    return {name for (name, chrom), cnt in counts.items() if cnt != 3}
 
 
 # ── VCF GENERATION ───────────────────────────────────────────────────────────
@@ -368,7 +374,7 @@ def run_qc(args):
                      os.path.join(assessment_dir, "MAPQ_Probe.histo"))
 
     # ── Filter 1: Unmapped (Strand == N/A) ──────────────────────────────────
-    df_mapped = df[df[col_strand] != "N/A"].copy()
+    df_mapped = df[df[col_strand].isin(["+", "-"])].copy()
     qc_stats["After unmapped filter"] = len(df_mapped)
     print(f"[qc] After unmapped filter: {len(df_mapped):,} ({len(df) - len(df_mapped):,} removed)")
 
@@ -428,8 +434,10 @@ def run_qc(args):
 
     # ── Filter 4: Polymorphic positions ─────────────────────────────────────
     # A position is polymorphic if multiple markers at the same Chr:Pos have different Ref/Alt
-    pos_allele_counts = matching.groupby([col_chr, col_pos]).apply(
-        lambda g: g[["_gref", "_galt"]].drop_duplicates().shape[0]
+    pos_allele_counts = (
+        matching.assign(_allele_pair=matching["_gref"] + "," + matching["_galt"])
+        .groupby([col_chr, col_pos])["_allele_pair"]
+        .nunique()
     )
     polymorphic = pos_allele_counts[pos_allele_counts > 1].reset_index()
     poly_set = set(zip(polymorphic[col_chr], polymorphic[col_pos]))
