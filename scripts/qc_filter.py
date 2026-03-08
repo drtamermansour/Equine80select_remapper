@@ -414,6 +414,25 @@ def run_qc(args):
     df_mapq["_galt"] = df_mapq.apply(lambda r: strand_normalize(str(r[col_alt]), r[col_strand]), axis=1)
     df_mapq["_genome_ref"] = df_mapq["Name"].map(ref_alleles)
 
+    # ── Auto-correct swapped Ref/Alt assignments ────────────────────────────
+    # When _galt matches the genome reference (but _gref does not), the alleles
+    # were assigned in the wrong order — typically because the SNP falls within
+    # an insertion in the CIGAR alignment, causing both candidates to have
+    # identical NM and s1 scores so the tiebreaker defaults to the wrong allele.
+    swap_mask = (
+        (df_mapq["_gref"] != df_mapq["_genome_ref"]) &
+        (df_mapq["_galt"] == df_mapq["_genome_ref"])
+    )
+    if swap_mask.any():
+        n_swapped = swap_mask.sum()
+        print(f"[qc] Auto-correcting {n_swapped:,} swapped Ref/Alt assignments (Alt matched genome Ref).")
+        df_mapq.loc[swap_mask, ["_gref", "_galt"]] = (
+            df_mapq.loc[swap_mask, ["_galt", "_gref"]].values
+        )
+        df_mapq.loc[swap_mask, [col_ref, col_alt]] = (
+            df_mapq.loc[swap_mask, [col_alt, col_ref]].values
+        )
+
     # ── Filter 3: Design conflict (remapped Ref must match genome Ref) ───────
     matching = df_mapq[
         (df_mapq["_gref"] == df_mapq["_genome_ref"]) &

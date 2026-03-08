@@ -159,11 +159,19 @@ def _get_nm(cols):
     return 999
 
 
+def _get_tag_int(cols, prefix, default=0):
+    for tag in cols[11:]:
+        if tag.startswith(prefix):
+            return int(tag[len(prefix):])
+    return default
+
+
 def parse_topseq_sam(sam_path):
     """
     Reads the TopGenomicSeq SAM and returns a dict:
-      { snp_name: { 'A': {NM, Chr, Pos, Cigar, MAPQ, Strand, End}, 'B': ... } }
-    Only primary, mapped alignments are kept.
+      { snp_name: { 'A': {NM, S1, Chr, Pos, Cigar, MAPQ, Strand, End}, 'B': ... } }
+    Only primary, mapped alignments are kept (secondary FLAG&256 and supplementary
+    FLAG&2048 are skipped to avoid chimeric split-alignments overwriting primaries).
     """
     results = {}
     with open(sam_path) as f:
@@ -172,9 +180,11 @@ def parse_topseq_sam(sam_path):
                 continue
             cols = line.split("\t")
             flag = int(cols[1])
-            if flag & 4:   # unmapped
+            if flag & 4:    # unmapped
                 continue
-            if flag & 256: # secondary
+            if flag & 256:  # secondary
+                continue
+            if flag & 2048: # supplementary (chimeric/split alignments)
                 continue
             qname_full = cols[0]
             which = qname_full[-1]          # 'A' or 'B'
@@ -183,6 +193,7 @@ def parse_topseq_sam(sam_path):
             cigar = cols[5]
             entry = {
                 "NM": _get_nm(cols),
+                "S1": _get_tag_int(cols, "s1:i:"),
                 "Chr": cols[2],
                 "Pos": pos,
                 "Cigar": cigar,
@@ -310,9 +321,12 @@ def run_remapping(args):
         res_b = res.get("B")
         nm_a = res_a["NM"] if res_a else 999
         nm_b = res_b["NM"] if res_b else 999
+        s1_a = res_a["S1"] if res_a else -1
+        s1_b = res_b["S1"] if res_b else -1
 
-        # Lower edit distance = closer to reference → that allele is the Ref
-        if nm_b < nm_a:
+        # Lower edit distance = closer to reference → that allele is the Ref.
+        # When NMs are equal, use s1 (chaining score) as tiebreaker: higher is better.
+        if nm_b < nm_a or (nm_b == nm_a and s1_b > s1_a):
             winner, final_ref, final_alt = res_b, info["AlleleB"], info["AlleleA"]
         elif res_a:
             winner, final_ref, final_alt = res_a, info["AlleleA"], info["AlleleB"]
@@ -371,7 +385,7 @@ def run_remapping(args):
             if pb["Chr"] != c_chr:
                 continue
             ov = calculate_overlap(ts["Start"], ts["End"], pb["Pos"], pb["End"])
-            if ov > best_overlap or (ov == best_overlap and pb["MAPQ"] > best_mapq):
+            if ov > 0 and (ov > best_overlap or (ov == best_overlap and pb["MAPQ"] > best_mapq)):
                 best_overlap = ov
                 best_mapq = pb["MAPQ"]
                 best_pb = pb
