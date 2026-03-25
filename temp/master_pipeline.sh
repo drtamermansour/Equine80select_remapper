@@ -1,3 +1,7 @@
+#############################################
+## This is the old master script. It was replaced after restructuring the pipeline.
+## The remaining valuble sections of this script will be saved in other tmp_* files. 
+##############################################
 ##!/bin/bash
 #SBATCH --job-name=remap_equCab3
 #SBATCH --output=remap_equCab3_%j.out
