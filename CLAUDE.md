@@ -196,7 +196,8 @@ Output column names and file names will use your `assemblyName` automatically.
 | `myRun.sh` | Project-specific SLURM run script for Equine80select → EquCab3; records the exact flags used (`--assembly equCab3 --threads 64 --keep-temp --resume --mapq-topseq 1`) |
 | `scripts/remap_manifest.py` | Core remapping: dual alignment + coordinate resolution |
 | `scripts/qc_filter.py` | QC cascade, allele decision, VCF/BIM/map generation |
-| `scripts/scaffold_haplotype_analyzer.py` | Pre-pipeline: align all unplaced scaffolds to chromosomal reference, output `scaffold_summary.tsv` |
+| `scripts/scaffold_haplotype_analyzer.py` | Pre-pipeline: align all unplaced scaffolds to chromosomal reference. |
+| `scripts/filter_scaffold_haplotypes.py` | Pre-pipeline: filter the aligned unplaced scaffolds, output `scaffold_haplotype_analysis/alt_haplotype_candidates.tsv` |
 | `scripts/compare_molly.sh` | Optional: cross-validation vs. MNEc670k dataset |
 
 ### Reference data
@@ -208,7 +209,7 @@ Output column names and file names will use your `assemblyName` automatically.
 | `equCab2/equCab2_genome.fa` | EquCab2 reference (symlink; needed for EquCab2 benchmarking) |
 | `backup_original/` | Original Illumina manifest CSV (do not modify) |
 
-### Generated outputs (from completed Equine80select → EquCab3 run)
+### Generated outputs of remapping (from completed Equine80selectv1 → EquCab3 run)
 | File | Description |
 |---|---|
 | `Equine80select_24_20067593_B1_remapped.csv` | Remapped manifest (all markers) |
@@ -218,7 +219,7 @@ Output column names and file names will use your `assemblyName` automatically.
 | `allele_usage_decision.txt` | Allele orientation decisions |
 | `MNEc670k_remap.tab` | Molly dataset (cleaned tab form) |
 | `molly_remapped_*.txt` | Cross-validation results |
-| `remap_assessment/` | MAPQ histograms, benchmark mismatches; `scaffold_haplotype_analysis/` subdir contains scaffold alt-haplotype analysis |
+| `remap_assessment/` | MAPQ histograms, benchmark mismatches |
 | `inconsistent_remapped.csv` | Markers excluded by consistency filter |
 | `polymorphic_positions.txt` | Positions excluded by polymorphic filter |
 | `temp_probes.fasta`, `temp_topseq.fasta` | Alignment input sequences (kept for debugging) |

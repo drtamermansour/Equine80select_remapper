@@ -32,6 +32,16 @@ equCab3_ref="$work_dir"/equCab3/equCab3_genome.fa
 cd "$work_dir"
 
 
+## find likely alternative haplotypes among unplaced scafolds
+python scripts/scaffold_haplotype_analyzer.py \
+	-r equCab3/equCab3_genome.fa \
+	-o scaffold_haplotype_analysis
+
+python scripts/filter_scaffold_haplotypes.py \
+	-i scaffold_haplotype_analysis/scaffold_summary.tsv \
+	-o scaffold_haplotype_analysis/alt_haplotype_candidates.tsv \
+	--min-identity 90 --min-query-cov 80 --max-span-ratio 3 --min-mapq 30 --max-blocks 5    
+
 
 ## This script is wrapper for "scripts/remap_manifest.py"
 ## Detailed pseudo-code for remap_manifest.py can be found in scripts/remap_manifest_psCode.txt
@@ -50,7 +60,7 @@ bash run_pipeline.sh \
     --keep-temp \
     --mapq-topseq 1 \
     --resume \
-    --output-dir results/
+    --output-dir results_E80selv1_to_equCab3/
 
 
 
