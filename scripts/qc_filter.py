@@ -71,6 +71,10 @@ def parse_args():
                    help="Path to temp_topseq.sam from remap step (for consistency check)")
     p.add_argument("--probe-sam", default=None,
                    help="Path to temp_probe.sam from remap step (for consistency check)")
+    p.add_argument("--coord-delta", type=int, default=-1,
+                   help="Maximum allowed CoordDelta (|probe_coord - CIGAR_coord|). "
+                        "-1 = disabled (default). Any value >= 0 removes markers with "
+                        "CoordDelta > threshold and all topseq_only markers.")
     return p.parse_args()
 
 
@@ -388,12 +392,42 @@ def run_qc(args):
     qc_stats["After MAPQ filter"] = len(df_mapq)
     print(f"[qc] After MAPQ filter (TopSeq>={args.mapq_topseq}): {len(df_mapq):,} ({len(df_mapped) - len(df_mapq):,} removed)")
 
+    # ── Filter 2.5: CoordDelta filter ────────────────────────────────────────
+    col_coord_delta  = f"CoordDelta_{assembly}"
+    col_map_status   = f"MappingStatus_{assembly}"
+    if args.coord_delta >= 0:
+        if col_coord_delta not in df_mapq.columns or col_map_status not in df_mapq.columns:
+            print(f"[qc] WARNING: --coord-delta requested but {col_coord_delta!r} or "
+                  f"{col_map_status!r} column not found in input. Skipping filter. "
+                  "Re-run remap_manifest.py to generate these columns.")
+            df_coord = df_mapq
+        else:
+            # Remove markers where CoordDelta > threshold.
+            # CoordDelta = -1 means CIGAR coord was unavailable (SNP in soft-clipped region);
+            # these are probe-derived coordinates with no cross-validation — they pass through
+            # (−1 is not > any threshold ≥ 0).
+            # topseq_only markers also carry CoordDelta = -1 but have no probe at all;
+            # they are explicitly removed whenever the filter is active.
+            exceeds_delta  = df_mapq[col_coord_delta] > args.coord_delta
+            is_topseq_only = df_mapq[col_map_status] == "topseq_only"
+            df_coord = df_mapq[~exceeds_delta & ~is_topseq_only].copy()
+            n_removed = len(df_mapq) - len(df_coord)
+            n_delta   = exceeds_delta.sum()
+            n_ts_only = (is_topseq_only & ~exceeds_delta).sum()
+            print(f"[qc] After CoordDelta filter (delta<={args.coord_delta}): "
+                  f"{len(df_coord):,} ({n_removed:,} removed: "
+                  f"{n_delta:,} CoordDelta>{args.coord_delta}, {n_ts_only:,} topseq_only)")
+    else:
+        df_coord = df_mapq
+    if args.coord_delta >= 0:
+        qc_stats[f"After CoordDelta filter (delta<={args.coord_delta})"] = len(df_coord)
+
     # ── Allele usage decisions ───────────────────────────────────────────────
     print("[qc] Computing allele usage decisions...")
     decisions = {}
     decision_path = os.path.join(out_dir, "allele_usage_decision.txt")
     with open(decision_path, "w") as f:
-        for _, row in df_mapq.iterrows():
+        for _, row in df_coord.iterrows():
             d = allele_usage_decision(row, col_strand, assembly)
             decisions[row["Name"]] = d
             f.write(f"{row['Name']}\t{d}\n")
@@ -403,43 +437,39 @@ def run_qc(args):
     print("[qc] Generating VCF position template...")
     pos_vcf  = os.path.join(temp_dir, "_pos.vcf")
     ref_vcf  = os.path.join(temp_dir, "_ref.vcf")
-    build_pos_vcf(df_mapq, args.vcf_contigs, col_chr, col_pos, pos_vcf)
+    build_pos_vcf(df_coord, args.vcf_contigs, col_chr, col_pos, pos_vcf)
 
     print("[qc] Extracting reference alleles with bcftools...")
     ref_alleles = extract_ref_alleles(pos_vcf, args.reference, ref_vcf)
 
     # ── Strand-normalise remapped alleles (to + strand) ─────────────────────
-    df_mapq = df_mapq.copy()
-    df_mapq["_gref"] = df_mapq.apply(lambda r: strand_normalize(str(r[col_ref]), r[col_strand]), axis=1)
-    df_mapq["_galt"] = df_mapq.apply(lambda r: strand_normalize(str(r[col_alt]), r[col_strand]), axis=1)
-    df_mapq["_genome_ref"] = df_mapq["Name"].map(ref_alleles)
+    df_coord = df_coord.copy()
+    df_coord["_gref"] = df_coord.apply(lambda r: strand_normalize(str(r[col_ref]), r[col_strand]), axis=1)
+    df_coord["_galt"] = df_coord.apply(lambda r: strand_normalize(str(r[col_alt]), r[col_strand]), axis=1)
+    df_coord["_genome_ref"] = df_coord["Name"].map(ref_alleles)
 
     # ── Auto-correct swapped Ref/Alt assignments ────────────────────────────
-    # When _galt matches the genome reference (but _gref does not), the alleles
-    # were assigned in the wrong order — typically because the SNP falls within
-    # an insertion in the CIGAR alignment, causing both candidates to have
-    # identical NM and s1 scores so the tiebreaker defaults to the wrong allele.
     swap_mask = (
-        (df_mapq["_gref"] != df_mapq["_genome_ref"]) &
-        (df_mapq["_galt"] == df_mapq["_genome_ref"])
+        (df_coord["_gref"] != df_coord["_genome_ref"]) &
+        (df_coord["_galt"] == df_coord["_genome_ref"])
     )
     if swap_mask.any():
         n_swapped = swap_mask.sum()
         print(f"[qc] Auto-correcting {n_swapped:,} swapped Ref/Alt assignments (Alt matched genome Ref).")
-        df_mapq.loc[swap_mask, ["_gref", "_galt"]] = (
-            df_mapq.loc[swap_mask, ["_galt", "_gref"]].values
+        df_coord.loc[swap_mask, ["_gref", "_galt"]] = (
+            df_coord.loc[swap_mask, ["_galt", "_gref"]].values
         )
-        df_mapq.loc[swap_mask, [col_ref, col_alt]] = (
-            df_mapq.loc[swap_mask, [col_alt, col_ref]].values
+        df_coord.loc[swap_mask, [col_ref, col_alt]] = (
+            df_coord.loc[swap_mask, [col_alt, col_ref]].values
         )
 
     # ── Filter 3: Design conflict (remapped Ref must match genome Ref) ───────
-    matching = df_mapq[
-        (df_mapq["_gref"] == df_mapq["_genome_ref"]) &
-        (df_mapq["_galt"] != "-")  # remove remaining indels
+    matching = df_coord[
+        (df_coord["_gref"] == df_coord["_genome_ref"]) &
+        (df_coord["_galt"] != "-")  # remove remaining indels
     ].copy()
     qc_stats["After design conflict filter"] = len(matching)
-    print(f"[qc] After design conflict filter: {len(matching):,} ({len(df_mapq) - len(matching):,} removed)")
+    print(f"[qc] After design conflict filter: {len(matching):,} ({len(df_coord) - len(matching):,} removed)")
 
     # Write _matchingSNPs.vcf
     match_vcf = os.path.join(out_dir, "_matchingSNPs.vcf")
