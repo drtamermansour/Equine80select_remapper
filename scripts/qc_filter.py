@@ -42,6 +42,7 @@ import sys
 from collections import Counter, defaultdict
 
 import pandas as pd
+import pysam
 
 COMPLEMENT = str.maketrans("ACGTacgt", "TGCAtgca")
 
@@ -78,6 +79,9 @@ def parse_args():
     p.add_argument("--require-strand-agreement", action="store_true", default=False,
                    help="Remove markers where probe strand does not agree with IlmnStrand "
                         "expectation (StrandAgreementAsExpected=False). Default: disabled.")
+    p.add_argument("--exclude-indels", action="store_true", default=False,
+                   help="Remove indel markers from all outputs (default: False = include indels). "
+                        "Indels are identified by an empty-string allele in Ref or Alt.")
     return p.parse_args()
 
 
@@ -370,6 +374,73 @@ def apply_strand_agreement_filter(df, assembly):
     return df[df[col] != "False"]
 
 
+# ── INDEL DESIGN CONFLICT CHECK ──────────────────────────────────────────────
+
+def check_deletion_ref_match(fasta, chrom, mapinfo, gref):
+    """Check whether the reference genome sequence at mapinfo matches gref.
+
+    Used to validate deletion-ref alleles: fetches len(gref) bases from the
+    reference at mapinfo (1-based) and compares to gref (case-insensitive).
+
+    For insertion-ref alleles (gref == ''), there is nothing to verify —
+    returns True (no conflict detected).
+
+    fasta   : open pysam.FastaFile
+    chrom   : chromosome name
+    mapinfo : 1-based start position of the deletion sequence
+    gref    : strand-normalised ref allele (empty string for insertions)
+
+    Returns True (no conflict) or False (mismatch or fetch error).
+    """
+    if gref == "":
+        return True  # insertion: ref is empty, nothing to verify
+    try:
+        ref_seq = fasta.fetch(chrom, mapinfo - 1, mapinfo - 1 + len(gref)).upper()
+    except (ValueError, KeyError):
+        return False
+    return ref_seq == gref.upper()
+
+
+# ── ANCHOR-BASE VCF ENCODING FOR INDELS ──────────────────────────────────────
+
+def make_anchor_alleles(fasta, chrom, mapinfo, gref, galt):
+    """Compute VCF-style anchor-base alleles for an indel marker.
+
+    VCF requires that every record shares at least one reference base between
+    REF and ALT.  For indels the anchor base at position mapinfo-1 is prepended:
+
+      deletion  (gref != '', galt == ''): pos=mapinfo-1, REF=anchor+gref, ALT=anchor
+      insertion (gref == '', galt != ''): pos=mapinfo-1, REF=anchor,      ALT=anchor+galt
+
+    fasta   : open pysam.FastaFile
+    chrom   : chromosome name
+    mapinfo : 1-based position of the first base of gref (or insertion site)
+
+    Returns (vcf_pos, vcf_ref, vcf_alt).
+    """
+    try:
+        anchor = fasta.fetch(chrom, mapinfo - 2, mapinfo - 1).upper()
+        if not anchor:
+            anchor = "N"
+    except (ValueError, KeyError):
+        anchor = "N"
+    vcf_pos = mapinfo - 1
+    vcf_ref = anchor + gref
+    vcf_alt = anchor + galt
+    return vcf_pos, vcf_ref, vcf_alt
+
+
+# ── EXCLUDE INDELS FILTER ────────────────────────────────────────────────────
+
+def apply_exclude_indels_filter(df):
+    """Remove rows where _gref or _galt is empty string (indel markers).
+
+    Called when --exclude-indels is set.  SNPs have both alleles as single
+    non-empty characters; indels have one empty-string allele.
+    """
+    return df[(df["_gref"] != "") & (df["_galt"] != "")]
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 
 def run_qc(args):
@@ -505,22 +576,63 @@ def run_qc(args):
         )
 
     # ── Filter 3: Design conflict (remapped Ref must match genome Ref) ───────
-    matching = df_coord[
-        (df_coord["_gref"] == df_coord["_genome_ref"]) &
-        (df_coord["_galt"] != "-")  # remove remaining indels
-    ].copy()
+    # For SNPs: _gref (single base, + strand) must equal _genome_ref from bcftools.
+    # For indels with deletion ref (_gref != ''): use pysam to fetch the full
+    #   deletion sequence from the reference and compare to _gref.
+    # For insertions (_gref == ''): no reference sequence to verify; pass through.
+    ref_fasta = pysam.FastaFile(args.reference)
+    try:
+        snp_mask   = (df_coord["_gref"] != "") & (df_coord["_galt"] != "")
+        indel_mask = (df_coord["_gref"] == "") | (df_coord["_galt"] == "")
+
+        # SNP design-conflict check (original logic)
+        snp_pass = snp_mask & (df_coord["_gref"] == df_coord["_genome_ref"])
+
+        # Indel design-conflict check via pysam reference fetch
+        def _indel_passes(row):
+            return check_deletion_ref_match(
+                ref_fasta, row[col_chr], int(row[col_pos]), row["_gref"]
+            )
+        indel_pass = indel_mask & df_coord.apply(_indel_passes, axis=1)
+
+        matching = df_coord[snp_pass | indel_pass].copy()
+    finally:
+        ref_fasta.close()
+
     qc_stats["After design conflict filter"] = len(matching)
     print(f"[qc] After design conflict filter: {len(matching):,} ({len(df_coord) - len(matching):,} removed)")
 
+    # ── Filter 3.5 (optional): Exclude indel markers ─────────────────────────
+    if args.exclude_indels:
+        before_excl = len(matching)
+        matching = apply_exclude_indels_filter(matching).copy()
+        n_excl = before_excl - len(matching)
+        print(f"[qc] After exclude-indels filter: {len(matching):,} ({n_excl:,} indels removed)")
+        qc_stats["After exclude-indels filter"] = len(matching)
+
     # Write _matchingSNPs.vcf
     match_vcf = os.path.join(out_dir, "_matchingSNPs.vcf")
-    with open(match_vcf, "w") as f:
-        with open(args.vcf_contigs) as vc:
-            f.write("##fileformat=VCFv4.3\n")
-            f.write(vc.read())
-        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
-        for _, row in matching.iterrows():
-            f.write(f"{row[col_chr]}\t{row[col_pos]}\t{row['Name']}\t{row['_gref']}\t{row['_galt']}\t.\t.\t.\n")
+    ref_fasta2 = pysam.FastaFile(args.reference)
+    try:
+        with open(match_vcf, "w") as f:
+            with open(args.vcf_contigs) as vc:
+                f.write("##fileformat=VCFv4.3\n")
+                f.write(vc.read())
+            f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+            for _, row in matching.iterrows():
+                gref = row["_gref"]
+                galt = row["_galt"]
+                pos  = int(row[col_pos])
+                if gref == "" or galt == "":
+                    # Indel: use anchor-base VCF encoding
+                    vcf_pos, vcf_ref, vcf_alt = make_anchor_alleles(
+                        ref_fasta2, row[col_chr], pos, gref, galt
+                    )
+                else:
+                    vcf_pos, vcf_ref, vcf_alt = pos, gref, galt
+                f.write(f"{row[col_chr]}\t{vcf_pos}\t{row['Name']}\t{vcf_ref}\t{vcf_alt}\t.\t.\t.\n")
+    finally:
+        ref_fasta2.close()
 
     # ── Filter 4: Polymorphic positions ─────────────────────────────────────
     # A position is polymorphic if multiple markers at the same Chr:Pos have different Ref/Alt
@@ -592,8 +704,26 @@ def run_qc(args):
                 f.write(line)
 
     # ── PLINK BIM file ───────────────────────────────────────────────────────
+    # For indel markers, apply anchor-base encoding so PLINK sees VCF-style alleles.
     bim_path = os.path.join(out_dir, f"{prefix}_remapped_{assembly}.bim")
     bim = df_consistent[[col_chr, "Name", col_pos, "_gref", "_galt"]].copy()
+    ref_fasta3 = pysam.FastaFile(args.reference)
+    try:
+        def _bim_row_alleles(row):
+            gref = row["_gref"]
+            galt = row["_galt"]
+            if gref == "" or galt == "":
+                _, vcf_ref, vcf_alt = make_anchor_alleles(
+                    ref_fasta3, row[col_chr], int(row[col_pos]), gref, galt
+                )
+                return vcf_ref, vcf_alt
+            return gref, galt
+        bim_alleles = bim.apply(_bim_row_alleles, axis=1, result_type="expand")
+        bim["_gref"] = bim_alleles[0]
+        bim["_galt"] = bim_alleles[1]
+    finally:
+        ref_fasta3.close()
+
     bim.insert(2, "cM", 0)
     bim = bim.sort_values([col_chr, col_pos])
     bim.to_csv(bim_path, sep="\t", header=False, index=False)

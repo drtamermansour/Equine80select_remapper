@@ -124,9 +124,16 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 1. `Strand_{assembly} == 'N/A'` → unmapped, remove
 2. `MAPQ_TopGenomicSeq < --mapq-topseq` → low-confidence, remove
 3. *(optional)* `CoordDelta > --coord-delta` OR `MappingStatus == topseq_only` → remove; disabled by default (`--coord-delta -1`)
-4. Remapped Ref ≠ genome Ref at that position → design conflict, remove
-5. Multiple Ref/Alt assignments at same Chr:Pos → polymorphic, remove
-6. Count of SAM records (topseq_A + topseq_B + probe) ≠ 3 → inconsistent, remove
+4. *(optional)* `StrandAgreementAsExpected == False` → remove; disabled by default (`--require-strand-agreement`)
+5. Design conflict:
+   - **SNPs**: strand-normalised Ref ≠ single-base genome Ref from bcftools → remove
+   - **Indels (deletion ref)**: pysam fetch of `len(gref)` bases at MapInfo ≠ gref → remove
+   - **Indels (insertion ref, `gref == ""`)**: always pass (nothing to verify against reference)
+6. *(optional)* `--exclude-indels` → remove all indel markers from output; disabled by default
+7. Multiple Ref/Alt assignments at same Chr:Pos → polymorphic, remove
+8. Count of SAM records (topseq_A + topseq_B + probe) ≠ 3 → inconsistent, remove
+
+**VCF and BIM indel encoding:** `pos = MapInfo − 1`; `REF = anchor + gref`; `ALT = anchor + galt` (anchor base fetched from FASTA at `MapInfo − 1`; deletion has `galt = ""`; insertion has `gref = ""`). Consistency filter still applies to indels — count is 3 (topseq_A + topseq_B + probe) because all indel markers are Infinium II with one probe.
 
 ### Expected counts (v2 manifest → EquCab3, default `--mapq-topseq 30`, no `--coord-delta`)
 ```
@@ -145,7 +152,7 @@ Final markers:            81,347
 ```
 
 ### CLI flags
-`-i`, `-r`, `-v` (vcf_contigs), `-a`, `-o`, `--mapq-topseq`, `--mapq-probe`, `--coord-delta` (default -1), `--temp-dir`, `--prefix`, `--topseq-sam`, `--probe-sam`
+`-i`, `-r`, `-v` (vcf_contigs), `-a`, `-o`, `--mapq-topseq`, `--mapq-probe`, `--coord-delta` (default -1), `--require-strand-agreement`, `--exclude-indels` (default: indels included), `--temp-dir`, `--prefix`, `--topseq-sam`, `--probe-sam`
 
 ---
 
@@ -172,10 +179,11 @@ Three-way comparison of `CoordProbe_{assembly}`, `Coord_TopSeqCIGAR_{assembly}`,
 
 ```bash
 conda activate remap
-pytest tests/ -v        # 106 tests (~7 min including integration tests)
+pytest tests/ -v        # 159 tests (~7 min including integration tests)
 ```
 
-- `tests/test_remap_manifest.py` — 60 tests: `parse_topseq_sam`, `is_placed_chromosome`, `select_best_pair`, `determine_ref_alt`, `parse_cigar_to_ref_pos`, `compute_qcov`, `compute_soft_clip_frac`, `_get_as`
+- `tests/test_remap_manifest.py` — 86 tests: `parse_topseq_sam`, `is_placed_chromosome`, `select_best_pair`, `determine_ref_alt`, `parse_cigar_to_ref_pos`, `compute_qcov`, `compute_soft_clip_frac`, `_get_as`, `reverse_complement`, `probe_topseq_orientation`, `compute_probe_strand_agreement`, `extract_candidates`, CIGAR-override-for-indels contract
+- `tests/test_qc_filter.py` — 30 tests: `apply_probe_mapq_filter`, `apply_strand_agreement_filter`, `strand_normalize`, `check_deletion_ref_match`, `make_anchor_alleles`, `apply_exclude_indels_filter`
 - `tests/test_benchmark_compare.py` — 46 tests: unit + integration for `benchmark_compare.py`; two integration tests require real data in `backup_original/` and `results_E80selv2_to_equCab3/`
 
 ---

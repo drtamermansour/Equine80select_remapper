@@ -96,10 +96,15 @@ def extract_candidates(top_seq):
     """
     Parses TopGenomicSeq format 'PREFIX[A/B]SUFFIX' into (pre, alleleA, alleleB, post).
     Returns (None, None, None, None) if the format is not recognised.
+
+    The deletion notation '-' (as in [-/CTCGTG] or [CTCGTG/-]) is normalised to ''
+    (empty string) because '-' means 'no sequence', not a literal dash character.
     """
     m = re.search(r"(.*?)\[(.*?)/(.*?)\](.*)", top_seq or "")
     if m:
-        return m.group(1), m.group(2), m.group(3), m.group(4)
+        a = "" if m.group(2) == "-" else m.group(2)
+        b = "" if m.group(3) == "-" else m.group(3)
+        return m.group(1), a, b, m.group(4)
     return None, None, None, None
 
 
@@ -1023,10 +1028,14 @@ def run_remapping(args):
             # CoordDelta stores |probe_coord - cigar_coord| for diagnostics.
             # When delta >= 2, CIGAR coordinate is used as final position
             # (benchmark shows it outperforms probe coord at delta >= 2).
+            # For indel markers (one allele is empty string), CIGAR coordinate
+            # is always used as the final position when available: probe-based
+            # coordinates are unreliable for multi-base alleles.
             target_idx = info["PreLen"] if winning_ts["Strand"] == "+" else info["PostLen"]
             cigar_coord, cigar_in_sc = parse_cigar_to_ref_pos(
                 winning_ts["Pos"], winning_ts["Cigar"], target_idx
             )
+            is_indel = len(ref_char) == 0 or len(alt_char) == 0
             if cigar_in_sc:
                 cigar_out       = 0
                 coord_delta_val = -1
@@ -1035,7 +1044,7 @@ def run_remapping(args):
             else:
                 coord_delta_val = abs(c_pos - cigar_coord)
                 cigar_out       = cigar_coord
-                if coord_delta_val >= 2:
+                if is_indel or coord_delta_val >= 2:
                     final_pos    = cigar_coord
                     coord_source = "cigar"
                 else:

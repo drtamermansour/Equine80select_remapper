@@ -100,6 +100,7 @@ bash run_pipeline.sh \
 | `--mapq-topseq` | `30` | Minimum MAPQ for TopGenomicSeq alignments |
 | `--mapq-probe` | `0` (disabled) | Minimum MAPQ for probe alignments |
 | `--coord-delta` | `-1` (disabled) | Remove markers where `\|probe_coord − CIGAR_coord\| > N` and all `topseq_only` markers |
+| `--exclude-indels` | off | Remove indel markers from all outputs (VCF, BIM, map file) |
 | `--keep-temp` | off | Retain intermediate FASTA/SAM files |
 | `--resume` | off | Skip minimap2 if SAM files already exist |
 
@@ -173,9 +174,11 @@ Filters applied sequentially by `qc_filter.py`; `QC_Report.txt` records counts a
 1. **Unmapped** — `Strand == N/A`
 2. **MAPQ** — `MAPQ_TopGenomicSeq < --mapq-topseq`
 3. **CoordDelta** *(optional)* — `CoordDelta > --coord-delta` or `MappingStatus == topseq_only`; disabled by default (`--coord-delta -1`)
-4. **Design conflict** — strand-normalised Ref ≠ genome reference base at MapInfo
-5. **Polymorphic sites** — multiple Ref/Alt assignments at the same Chr:Pos
-6. **Consistency** — probe + TopGenomicSeq SAM record count ≠ 3
+4. **Strand agreement** *(optional)* — `StrandAgreementAsExpected == False`; disabled by default (`--require-strand-agreement`)
+5. **Design conflict** — SNPs: strand-normalised Ref ≠ genome ref base at MapInfo; deletions: pysam fetch of ref sequence at MapInfo ≠ gref; insertions: always pass
+6. **Exclude indels** *(optional)* — remove all indel markers; disabled by default (`--exclude-indels`)
+7. **Polymorphic sites** — multiple Ref/Alt assignments at the same Chr:Pos
+8. **Consistency** — probe + TopGenomicSeq SAM record count ≠ 3
 
 For Equine80select v2 → EquCab3 (default `--mapq-topseq 30`, no `--coord-delta`):
 
@@ -204,7 +207,7 @@ conda activate remap
 pytest tests/ -v
 ```
 
-Expected: **60 tests** in `tests/test_remap_manifest.py` + **46 tests** in `tests/test_benchmark_compare.py` (~7 minutes total including integration tests).
+Expected: **86 tests** in `tests/test_remap_manifest.py` + **30 tests** in `tests/test_qc_filter.py` + **46 tests** in `tests/test_benchmark_compare.py` (~7 minutes total including integration tests).
 
 The two integration tests in `test_benchmark_compare.py` require real data files in `backup_original/` and `results_E80selv2_to_equCab3/`.
 
