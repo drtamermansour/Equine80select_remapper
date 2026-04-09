@@ -31,7 +31,7 @@ Modern genome assemblies include unplaced scaffolds that are often alternative h
 ```bash
 python scripts/scaffold_haplotype_analyzer.py \
     -r equCab3/equCab3_genome.fa \
-    -o remap_assessment/scaffold_haplotype_analysis/ \
+    -o scaffold_haplotype_analysis/ \
     --threads 8
 ```
 
@@ -41,8 +41,8 @@ Aligns all unplaced scaffolds to the placed chromosomes using `minimap2 -x asm5`
 
 ```bash
 python scripts/filter_scaffold_haplotypes.py \
-    -i remap_assessment/scaffold_haplotype_analysis/scaffold_summary.tsv \
-    -o remap_assessment/scaffold_haplotype_analysis/alt_haplotype_candidates.tsv
+    -i scaffold_haplotype_analysis/scaffold_summary.tsv \
+    -o scaffold_haplotype_analysis/alt_haplotype_candidates.tsv
 ```
 
 Applies threshold filters to select scaffolds likely to be alternative haplotypes. Default thresholds are Tier 1 (high confidence). See **[docs/scaffold_haplotype_thresholds.md](docs/scaffold_haplotype_thresholds.md)** for the full threshold rationale and multiple strictness tiers.
@@ -61,7 +61,7 @@ Key CLI flags:
 
 ```bash
 python scripts/exclude_alt_haplotypes.py \
-    --scaffolds remap_assessment/scaffold_haplotype_analysis/alt_haplotype_candidates.tsv \
+    --scaffolds scaffold_haplotype_analysis/alt_haplotype_candidates.tsv \
     --reference equCab3/equCab3_genome.fa \
     --output-dir equCab3_cleaned/
 ```
