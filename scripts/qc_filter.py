@@ -75,6 +75,9 @@ def parse_args():
                    help="Maximum allowed CoordDelta (|probe_coord - CIGAR_coord|). "
                         "-1 = disabled (default). Any value >= 0 removes markers with "
                         "CoordDelta > threshold and all topseq_only markers.")
+    p.add_argument("--require-strand-agreement", action="store_true", default=False,
+                   help="Remove markers where probe strand does not agree with IlmnStrand "
+                        "expectation (StrandAgreementAsExpected=False). Default: disabled.")
     return p.parse_args()
 
 
@@ -355,6 +358,18 @@ def apply_probe_mapq_filter(df, threshold):
     return df[~probe_fail]
 
 
+# ── STRAND AGREEMENT FILTER ──────────────────────────────────────────────────
+
+def apply_strand_agreement_filter(df, assembly):
+    """Return df with rows removed where StrandAgreementAsExpected is 'False'.
+
+    Rows with 'True' or 'N/A' (topseq_only or unknown orientation) are kept.
+    Raises KeyError if the expected column is absent.
+    """
+    col = f"StrandAgreementAsExpected_{assembly}"
+    return df[df[col] != "False"]
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 
 def run_qc(args):
@@ -433,6 +448,20 @@ def run_qc(args):
         df_coord = df_mapq
     if args.coord_delta >= 0:
         qc_stats[f"After CoordDelta filter (delta<={args.coord_delta})"] = len(df_coord)
+
+    # ── Filter 2.6: Strand agreement filter ─────────────────────────────────
+    col_strand_agree = f"StrandAgreementAsExpected_{assembly}"
+    if args.require_strand_agreement:
+        if col_strand_agree not in df_coord.columns:
+            print(f"[qc] WARNING: --require-strand-agreement requested but {col_strand_agree!r} "
+                  "column not found in input. Skipping filter. "
+                  "Re-run remap_manifest.py to generate this column.")
+        else:
+            df_before = df_coord
+            df_coord = apply_strand_agreement_filter(df_coord, assembly).copy()
+            n_removed = len(df_before) - len(df_coord)
+            print(f"[qc] After strand agreement filter: {len(df_coord):,} ({n_removed:,} removed)")
+            qc_stats["After strand agreement filter"] = len(df_coord)
 
     # ── Allele usage decisions ───────────────────────────────────────────────
     print("[qc] Computing allele usage decisions...")

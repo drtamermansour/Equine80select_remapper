@@ -19,6 +19,9 @@ from remap_manifest import (
     get_alignment_end,
     calculate_overlap,
     DecisionCounters,
+    reverse_complement,
+    probe_topseq_orientation,
+    compute_probe_strand_agreement,
 )
 
 
@@ -474,3 +477,169 @@ def test_select_best_pair_prefers_higher_as_on_mapq_tie():
     result = select_best_pair(ts, pb)
     assert result[0] == 'winner'
     assert result[2]['AS'] == 150
+
+
+# ── reverse_complement ────────────────────────────────────────────────────────
+
+def test_reverse_complement_simple():
+    assert reverse_complement("ACGT") == "ACGT"
+
+def test_reverse_complement_asymmetric():
+    assert reverse_complement("AAAA") == "TTTT"
+
+def test_reverse_complement_mixed():
+    assert reverse_complement("AACCGGTT") == "AACCGGTT"
+
+def test_reverse_complement_order():
+    """RC is reverse of complement: ATCG → complement=TAGC → reverse=CGAT."""
+    assert reverse_complement("ATCG") == "CGAT"
+
+def test_reverse_complement_lowercase():
+    assert reverse_complement("acgt") == "acgt"
+
+
+# ── probe_topseq_orientation ──────────────────────────────────────────────────
+
+def test_probe_topseq_orientation_same_found_in_a():
+    """Probe as-is is a substring of topseq_a → 'same'."""
+    probe   = "AAACCC"
+    topseq_a = "XYZAAACCCXYZ"
+    topseq_b = "XYZAAATCCXYZ"
+    assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "same"
+
+def test_probe_topseq_orientation_same_found_in_b():
+    """Probe as-is is a substring of topseq_b (not a) → 'same'."""
+    probe    = "AAACCC"
+    topseq_a = "XYZAAATCCXYZ"
+    topseq_b = "XYZAAACCCXYZ"
+    assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "same"
+
+def test_probe_topseq_orientation_complement():
+    """RC of probe is a substring of topseq_a → 'complement'."""
+    probe    = "AAACCC"   # RC = GGGTT T → "GGGTT T"
+    rc_probe = reverse_complement(probe)
+    topseq_a = "XYZ" + rc_probe + "XYZ"
+    topseq_b = "XXXXXXXXXX"
+    assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "complement"
+
+def test_probe_topseq_orientation_unknown():
+    """Neither probe nor its RC appears in either topseq → 'unknown'."""
+    probe    = "AAACCC"
+    topseq_a = "TTTTTTTTTT"
+    topseq_b = "GGGGGGGGGG"
+    assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "unknown"
+
+def test_probe_topseq_orientation_same_takes_priority_over_complement():
+    """If probe matches as-is (same) AND its RC also matches, 'same' wins."""
+    probe    = "ACGT"  # palindrome: RC("ACGT") == "ACGT"
+    topseq_a = "XACGTX"
+    topseq_b = "XXXXXXX"
+    assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "same"
+
+
+# ── compute_probe_strand_agreement ────────────────────────────────────────────
+
+def test_probe_strand_top_probe_agrees_with_topseq():
+    """TOP, probe on same strand as TopSeq → ProbeStrand=TopSeq strand, agreement=True."""
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="TOP", topseq_strand="+",
+        probe_align_strand="+", probe_seq=None, topseq_a=None, topseq_b=None,
+    )
+    assert ps == "+"
+    assert ag == "True"
+
+def test_probe_strand_top_probe_disagrees_with_topseq():
+    """TOP, probe on opposite strand from TopSeq → agreement=False."""
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="TOP", topseq_strand="+",
+        probe_align_strand="-", probe_seq=None, topseq_a=None, topseq_b=None,
+    )
+    assert ps == "-"
+    assert ag == "False"
+
+def test_probe_strand_bot_probe_opposite_topseq_is_expected():
+    """BOT, probe on opposite strand from TopSeq → agreement=True (expected for BOT)."""
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="BOT", topseq_strand="+",
+        probe_align_strand="-", probe_seq=None, topseq_a=None, topseq_b=None,
+    )
+    assert ps == "-"
+    assert ag == "True"
+
+def test_probe_strand_bot_probe_same_as_topseq_is_unexpected():
+    """BOT, probe on same strand as TopSeq → agreement=False (unexpected for BOT)."""
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="BOT", topseq_strand="+",
+        probe_align_strand="+", probe_seq=None, topseq_a=None, topseq_b=None,
+    )
+    assert ps == "+"
+    assert ag == "False"
+
+def test_probe_strand_top_minus_strand_topseq():
+    """TOP, TopSeq on - strand, probe also on - → agreement=True."""
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="TOP", topseq_strand="-",
+        probe_align_strand="-", probe_seq=None, topseq_a=None, topseq_b=None,
+    )
+    assert ps == "-"
+    assert ag == "True"
+
+def test_probe_strand_plus_same_orientation_is_expected():
+    """PLUS, sequence comparison → same orientation, topseq=+ → ProbeStrand=+, agreement=True."""
+    probe    = "AAACCC"
+    topseq_a = "XYZ" + probe + "XYZ"
+    topseq_b = "XXXXXXXXXX"
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="PLUS", topseq_strand="+",
+        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+    )
+    assert ps == "+"
+    assert ag == "True"
+
+def test_probe_strand_plus_complement_orientation_is_unexpected():
+    """PLUS, RC matches → complement orientation, topseq=+ → ProbeStrand=-, agreement=False."""
+    probe    = "AAACCC"
+    topseq_a = "XYZ" + reverse_complement(probe) + "XYZ"
+    topseq_b = "XXXXXXXXXX"
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="PLUS", topseq_strand="+",
+        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+    )
+    assert ps == "-"
+    assert ag == "False"
+
+def test_probe_strand_minus_complement_orientation_is_expected():
+    """MINUS, RC matches → complement orientation, topseq=+ → ProbeStrand=-, agreement=True."""
+    probe    = "AAACCC"
+    topseq_a = "XYZ" + reverse_complement(probe) + "XYZ"
+    topseq_b = "XXXXXXXXXX"
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="MINUS", topseq_strand="+",
+        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+    )
+    assert ps == "-"
+    assert ag == "True"
+
+def test_probe_strand_plus_unknown_orientation_gives_na():
+    """PLUS, no sequence match → ProbeStrand=N/A, agreement=N/A."""
+    probe    = "AAACCC"
+    topseq_a = "TTTTTTTTTT"
+    topseq_b = "GGGGGGGGGG"
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="PLUS", topseq_strand="+",
+        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+    )
+    assert ps == "N/A"
+    assert ag == "N/A"
+
+def test_probe_strand_plus_topseq_minus_same_orientation_unexpected():
+    """PLUS, same orientation but topseq=- → ProbeStrand=-, agreement=False (expected + for PLUS)."""
+    probe    = "AAACCC"
+    topseq_a = "XYZ" + probe + "XYZ"
+    topseq_b = "XXXXXXXXXX"
+    ps, ag = compute_probe_strand_agreement(
+        ilmn_strand="PLUS", topseq_strand="-",
+        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+    )
+    assert ps == "-"
+    assert ag == "False"

@@ -85,6 +85,13 @@ def locate_data_section(filename, start_marker="[Assay]", end_marker="[Controls]
 
 # ── SEQUENCE HELPERS ─────────────────────────────────────────────────────────
 
+_RC_TABLE = str.maketrans("ACGTacgt", "TGCAtgca")
+
+def reverse_complement(seq):
+    """Return the reverse complement of a DNA sequence (supports upper and lower case)."""
+    return seq.translate(_RC_TABLE)[::-1]
+
+
 def extract_candidates(top_seq):
     """
     Parses TopGenomicSeq format 'PREFIX[A/B]SUFFIX' into (pre, alleleA, alleleB, post).
@@ -94,6 +101,65 @@ def extract_candidates(top_seq):
     if m:
         return m.group(1), m.group(2), m.group(3), m.group(4)
     return None, None, None, None
+
+
+def probe_topseq_orientation(probe_seq, topseq_a, topseq_b):
+    """
+    Determine the orientation of a probe relative to TopGenomicSeq by sequence comparison.
+
+    Returns:
+      "same"       — probe (as-is) is a substring of topseq_a or topseq_b
+      "complement" — RC(probe) is a substring of topseq_a or topseq_b
+      "unknown"    — neither matches
+    """
+    if probe_seq in topseq_a or probe_seq in topseq_b:
+        return "same"
+    rc = reverse_complement(probe_seq)
+    if rc in topseq_a or rc in topseq_b:
+        return "complement"
+    return "unknown"
+
+
+def compute_probe_strand_agreement(ilmn_strand, topseq_strand, probe_align_strand,
+                                   probe_seq, topseq_a, topseq_b):
+    """
+    Compute the probe strand and whether it agrees with the IlmnStrand expectation.
+
+    For IlmnStrand TOP/BOT: uses the probe alignment strand directly.
+      TOP → probe strand expected to match TopSeq strand.
+      BOT → probe strand expected to be opposite to TopSeq strand.
+
+    For IlmnStrand PLUS/MINUS: uses sequence comparison (probe_topseq_orientation).
+      PLUS → probe expected on '+' strand.
+      MINUS → probe expected on '-' strand.
+
+    Returns (probe_strand, agreement_as_expected) as strings:
+      probe_strand          : '+', '-', or 'N/A'
+      agreement_as_expected : 'True', 'False', or 'N/A'
+    """
+    ilmn = ilmn_strand.upper() if ilmn_strand else ""
+
+    if ilmn in ("TOP", "BOT"):
+        probe_strand = probe_align_strand
+        if ilmn == "TOP":
+            agreement = (probe_align_strand == topseq_strand)
+        else:  # BOT
+            agreement = (probe_align_strand != topseq_strand)
+        return probe_strand, str(agreement)
+
+    if ilmn in ("PLUS", "MINUS"):
+        orientation = probe_topseq_orientation(probe_seq, topseq_a, topseq_b)
+        if orientation == "unknown":
+            return "N/A", "N/A"
+        # Derive absolute probe strand from orientation + TopSeq strand
+        if orientation == "same":
+            probe_strand = topseq_strand
+        else:  # complement
+            probe_strand = "-" if topseq_strand == "+" else "+"
+        expected_strand = "+" if ilmn == "PLUS" else "-"
+        return probe_strand, str(probe_strand == expected_strand)
+
+    return "N/A", "N/A"
 
 # ── CIGAR UTILITIES ──────────────────────────────────────────────────────────
 
@@ -534,7 +600,8 @@ class DecisionCounters:
     final_topseq_only:            int = 0
     topseq_rescue_failed_softclip: int = 0   # SNP target in soft-clipped region
     topseq_rescue_failed_refalt:   int = 0   # NM tie unresolvable by ref lookup
-    ref_base_mismatch:       int = 0
+    ref_base_mismatch:             int = 0
+    strand_agreement_unexpected:   int = 0   # StrandAgreementAsExpected == False
 
     def format_summary(self) -> str:
         W = 55
@@ -570,6 +637,7 @@ class DecisionCounters:
         row("NM tie resolved by ref lookup:", self.ref_alt_ref_resolved)
         row("NM tie \u2192 ambiguous (triallelic):", self.ref_alt_nm_tie)
         row("Genome ref base mismatches (see RefBaseMatch col):", self.ref_base_mismatch)
+        row("Strand agreement unexpected (StrandAgreementAsExpected=False):", self.strand_agreement_unexpected)
         lines.append("")
         lines.append("MAPQ distribution (min of winning pair):")
         row("MAPQ = 60:", self.mapq_60)
@@ -651,6 +719,7 @@ def run_remapping(args):
                 candidates_info[name] = {
                     "PreLen": len(pre), "PostLen": len(post),
                     "AlleleA": a, "AlleleB": b,
+                    "TopSeqA": seq_a, "TopSeqB": seq_b,
                 }
 
     # ── Align with minimap2 ──────────────────────────────────────────────────
@@ -690,6 +759,8 @@ def run_remapping(args):
     col_coord_delta  = f"CoordDelta_{assembly}"
     col_coord_source = f"CoordSource_{assembly}"
     col_ref_match    = f"RefBaseMatch_{assembly}"
+    col_probe_strand = f"ProbeStrand_{assembly}"
+    col_strand_agree = f"StrandAgreementAsExpected_{assembly}"
     new_cols = {
         col_chr: [], col_pos: [], col_strand: [],
         col_ref: [], col_alt: [],
@@ -702,6 +773,8 @@ def run_remapping(args):
         col_coord_delta:  [],
         col_coord_source: [],
         col_ref_match: [],
+        col_probe_strand: [],
+        col_strand_agree: [],
         col_status: [],
     }
     ambiguous_rows = []
@@ -729,6 +802,8 @@ def run_remapping(args):
             new_cols[col_coord_delta].append(-1)
             new_cols[col_coord_source].append("N/A")
             new_cols[col_ref_match].append("N/A")
+            new_cols[col_probe_strand].append("N/A")
+            new_cols[col_strand_agree].append("N/A")
             new_cols[col_status].append(status)
 
         _COMP = {"A": "T", "T": "A", "C": "G", "G": "C"}
@@ -832,6 +907,8 @@ def run_remapping(args):
                 new_cols[col_coord_delta].append(-1)   # no probe coord to compare
                 new_cols[col_coord_source].append("cigar")
                 new_cols[col_ref_match].append(ref_base_match_str)
+                new_cols[col_probe_strand].append("N/A")   # no probe alignment
+                new_cols[col_strand_agree].append("N/A")   # no probe alignment
                 new_cols[col_status].append("topseq_only")
                 counters.final_topseq_only += 1
                 continue
@@ -965,6 +1042,18 @@ def run_remapping(args):
                     final_pos    = c_pos
                     coord_source = "probe"
 
+            ilmn_strand = str(row.get("IlmnStrand", "")).strip().upper()
+            pb_strand, sa_expected = compute_probe_strand_agreement(
+                ilmn_strand=ilmn_strand,
+                topseq_strand=winning_ts["Strand"],
+                probe_align_strand=winning_pb["Strand"],
+                probe_seq=str(row.get("AlleleA_ProbeSeq", "")),
+                topseq_a=info.get("TopSeqA", ""),
+                topseq_b=info.get("TopSeqB", ""),
+            )
+            if sa_expected == "False":
+                counters.strand_agreement_unexpected += 1
+
             new_cols[col_chr].append(winning_ts["Chr"])
             new_cols[col_pos].append(final_pos)
             new_cols[col_strand].append(winning_ts["Strand"])
@@ -980,6 +1069,8 @@ def run_remapping(args):
             new_cols[col_coord_delta].append(coord_delta_val)
             new_cols[col_coord_source].append(coord_source)
             new_cols[col_ref_match].append(ref_base_match_str)
+            new_cols[col_probe_strand].append(pb_strand)
+            new_cols[col_strand_agree].append(sa_expected)
             new_cols[col_status].append(status)
 
             if status == "scaffold_resolved":
