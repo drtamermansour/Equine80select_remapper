@@ -81,7 +81,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 7. Calculate variant position via `get_probe_coordinate()` using the **probe's own alignment strand** (NOT the TopSeq strand — mixing these caused a ±51 bp bug that is now fixed).
 8. **CIGAR cross-validation:** compute `Coord_TopSeqCIGAR` by walking the TopSeq CIGAR to the SNP position. `CoordDelta = |probe_coord − CIGAR_coord|`. If `CoordDelta ≥ 2`, use CIGAR coord as `MapInfo` (`CoordSource = "cigar"`); otherwise use probe coord (`CoordSource = "probe"`). Benchmark accuracy: probe 98.0%, CIGAR 98.6%, final 98.7%.
 
-**topseq_only rescue:** When no valid triple exists but TopSeq aligned, derive SNP coordinate from CIGAR walk on the best TopSeq alignment (highest MAPQ/AS across both alleles). Ref/Alt determined by NM comparison. 1,336/1,394 no-valid-triple markers rescued (95.8%). Failures: 42 markers with SNP in soft-clipped region (CIGAR coord unavailable), 16 with NM tie. `MAPQ_Probe = 0` and `CoordDelta = −1` for all topseq_only markers.
+**topseq_only rescue:** When no valid triple exists but TopSeq aligned, derive SNP coordinate from CIGAR walk on the best TopSeq alignment (highest MAPQ/AS across both alleles). Ref/Alt determined by NM comparison. 1,336/1,394 no-valid-triple markers rescued (95.8%). Failures: 42 markers with SNP in soft-clipped region (CIGAR coord unavailable), 16 with NM tie. `MAPQ_Probe = NaN` and `CoordDelta = −1` for all topseq_only markers.
 
 ### Output columns (assembly = `equCab3` example)
 
@@ -91,7 +91,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 | `MapInfo_equCab3` | Final 1-based position (probe-derived or CIGAR-derived; see CoordSource) |
 | `Strand_equCab3` | `+`, `-`, or `N/A` (TopGenomicSeq alignment strand) |
 | `Ref_equCab3` / `Alt_equCab3` | Alleles in alignment strand (NOT strand-normalised; qc_filter.py normalises) |
-| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=0 for topseq_only markers |
+| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=NaN for topseq_only markers (no probe alignment) |
 | `MappingStatus_equCab3` | `mapped`, `unmapped`, `ambiguous`, `scaffold_resolved`, `ref_resolved`, `nm_position_resolved`, `topseq_only` |
 | `DeltaScore_TopGenomicSeq` | AS gap between best and 2nd-best TopSeq alignments; −1 if fewer than 2 |
 | `QueryCov_TopGenomicSeq` | Fraction of TopSeq query in M/=/X aligned ops; 0.0 for unmapped |

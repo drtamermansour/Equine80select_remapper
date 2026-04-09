@@ -14,7 +14,7 @@ Outputs the original manifest with these columns appended:
   Ref_{assembly}          Reference allele
   Alt_{assembly}          Alternate allele
   MAPQ_TopGenomicSeq      Mapping quality of the winning TopGenomicSeq alignment
-  MAPQ_Probe              Mapping quality of the selected probe alignment (0 = fallback used)
+  MAPQ_Probe              Mapping quality of the selected probe alignment (NaN = no probe alignment, topseq_only)
 
 Usage:
   python scripts/remap_manifest.py \\
@@ -35,6 +35,9 @@ from dataclasses import dataclass
 
 import pandas as pd
 import pysam
+
+# IUPAC ambiguity codes (excluding N/n) → A; str.translate is O(n) C-level loop
+_IUPAC_TO_A = str.maketrans("MRWSYKBDHVmrwsykbdhv", "A" * 20)
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -636,7 +639,10 @@ def run_remapping(args):
             name = row["Name"]
             fp.write(f">{name}\n{row['AlleleA_ProbeSeq']}\n")
 
-            pre, a, b, post = extract_candidates(row.get("TopGenomicSeq", ""))
+            raw_topseq = row.get("TopGenomicSeq", "")
+            if raw_topseq:
+                raw_topseq = raw_topseq.translate(_IUPAC_TO_A)
+            pre, a, b, post = extract_candidates(raw_topseq)
             if pre is not None:
                 seq_a = pre + (a if a != "-" else "") + post
                 seq_b = pre + (b if b != "-" else "") + post
@@ -817,7 +823,7 @@ def run_remapping(args):
                 new_cols[col_ref].append(ref_char)
                 new_cols[col_alt].append(alt_char)
                 new_cols[col_mapq_ts].append(best_ts["MAPQ"])
-                new_cols[col_mapq_pb].append(0)
+                new_cols[col_mapq_pb].append(float('nan'))  # no probe alignment
                 new_cols[col_delta].append(delta_score)
                 new_cols[col_qcov].append(compute_qcov(best_ts["Cigar"]))
                 new_cols[col_scfrac].append(compute_soft_clip_frac(best_ts["Cigar"]))

@@ -339,6 +339,22 @@ def benchmark_known_assembly(df, assembly, assessment_dir):
     print(f"[qc] Known-assembly benchmark: {len(known):,} markers, {len(mismatches):,} mismatches → {mismatch_path}")
 
 
+# ── PROBE MAPQ FILTER ────────────────────────────────────────────────────────
+
+def apply_probe_mapq_filter(df, threshold):
+    """Return df with rows removed where MAPQ_Probe is defined and below threshold.
+
+    NaN MAPQ_Probe means no probe alignment was used (topseq_only markers) —
+    these are exempt from the filter regardless of threshold.
+    threshold=0 disables the filter entirely and returns df unchanged.
+    """
+    if threshold <= 0:
+        return df
+    probe_mapq = df["MAPQ_Probe"]
+    probe_fail = probe_mapq.notna() & (probe_mapq < threshold)
+    return df[~probe_fail]
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 
 def run_qc(args):
@@ -383,12 +399,8 @@ def run_qc(args):
     print(f"[qc] After unmapped filter: {len(df_mapped):,} ({len(df) - len(df_mapped):,} removed)")
 
     # ── Filter 2: MAPQ filter ────────────────────────────────────────────────
-    mapq_mask = df_mapped["MAPQ_TopGenomicSeq"] >= args.mapq_topseq
-    if args.mapq_probe > 0:
-        # Only apply probe MAPQ filter where a probe alignment was found (MAPQ_Probe > 0)
-        probe_fail = (df_mapped["MAPQ_Probe"] > 0) & (df_mapped["MAPQ_Probe"] < args.mapq_probe)
-        mapq_mask = mapq_mask & ~probe_fail
-    df_mapq = df_mapped[mapq_mask].copy()
+    df_topseq_filtered = df_mapped[df_mapped["MAPQ_TopGenomicSeq"] >= args.mapq_topseq]
+    df_mapq = apply_probe_mapq_filter(df_topseq_filtered, args.mapq_probe).copy()
     qc_stats["After MAPQ filter"] = len(df_mapq)
     print(f"[qc] After MAPQ filter (TopSeq>={args.mapq_topseq}): {len(df_mapq):,} ({len(df_mapped) - len(df_mapq):,} removed)")
 

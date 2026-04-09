@@ -138,7 +138,7 @@ The remapped CSV includes 14 new columns beyond the manifest fields:
 | `MapInfo_{assembly}` | **Final 1-based position** (probe-derived or CIGAR-derived; see CoordSource) |
 | `Strand_{assembly}` | TopGenomicSeq alignment strand (`+`, `−`, `N/A`) |
 | `Ref_{assembly}` / `Alt_{assembly}` | Alleles in alignment strand (strand-normalised by qc_filter.py) |
-| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=0 for `topseq_only` markers |
+| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=NaN for `topseq_only` markers (no probe alignment) |
 | `MappingStatus_{assembly}` | `mapped`, `ref_resolved`, `nm_position_resolved`, `scaffold_resolved`, `topseq_only`, `unmapped`, `ambiguous` |
 | `DeltaScore_TopGenomicSeq` | AS gap between best and 2nd-best TopSeq alignments; −1 = uniquely placed |
 | `QueryCov_TopGenomicSeq` | Fraction of TopSeq query in aligned (M/=/X) ops |
