@@ -436,6 +436,56 @@ def _make_competing_rows(pairs, reason):
     return rows
 
 
+def build_valid_triples(ts_aligns, probe_aligns, ilmn_strand,
+                        probe_seq, topseq_a, topseq_b):
+    """
+    Enumerate valid (TopSeq_allele, ts_align, probe_align) triples.
+
+    Validity requires:
+      1. ts and probe on the same chromosome.
+      2. Strand agreement: compute_probe_strand_agreement must return 'True'.
+         If it returns 'N/A' (IlmnStrand unknown), the probe is kept.
+      3. Among strand-valid probes on the same chromosome, keep only the one
+         with the highest overlap with ts (overlap-max selection).
+      4. overlap(ts, best_probe) > 0.
+
+    Returns a list of (allele, ts_align, probe_align) tuples.
+    """
+    triples = []
+    for allele, ts_list in ts_aligns.items():
+        for ts in ts_list:
+            # Collect probes on the same chromosome
+            same_chr = [pb for pb in probe_aligns if pb["Chr"] == ts["Chr"]]
+            if not same_chr:
+                continue
+            # Strand-filter: keep probes where agreement == 'True' or 'N/A'
+            strand_valid = []
+            for pb in same_chr:
+                _, agreement = compute_probe_strand_agreement(
+                    ilmn_strand=ilmn_strand,
+                    topseq_strand=ts["Strand"],
+                    probe_align_strand=pb["Strand"],
+                    probe_seq=probe_seq,
+                    topseq_a=topseq_a,
+                    topseq_b=topseq_b,
+                )
+                if agreement in ("True", "N/A"):
+                    strand_valid.append(pb)
+            if not strand_valid:
+                continue
+            # Overlap-max: keep the single strand-valid probe with highest overlap
+            best_pb = max(
+                strand_valid,
+                key=lambda pb: calculate_overlap(ts["Pos"], ts["End"],
+                                                  pb["Pos"], pb["End"])
+            )
+            if calculate_overlap(ts["Pos"], ts["End"],
+                                  best_pb["Pos"], best_pb["End"]) <= 0:
+                continue
+            triples.append((allele, ts, best_pb))
+    return triples
+
+
 def select_best_pair(topseq_aligns, probe_aligns):
     """
     Finds the best (TopGenomicSeq × probe) alignment pair for a single marker.

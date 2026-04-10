@@ -24,6 +24,7 @@ from remap_manifest import (
     compute_probe_strand_agreement,
     extract_candidates,
     compute_alignment_status,
+    build_valid_triples,
 )
 
 
@@ -839,3 +840,82 @@ def test_alignment_status_unmapped():
     ts = {"A": [], "B": []}
     pb = []
     assert compute_alignment_status(ts, pb) == "unmapped"
+
+
+# ── build_valid_triples ───────────────────────────────────────────────────────
+
+def test_build_valid_triples_strand_valid_probe_kept():
+    """TOP strand marker: probe on same strand as TopSeq → strand-valid → triple emitted."""
+    ts_aligns = {"A": [_ts("chr1", 100, strand="+")], "B": []}
+    pb_aligns = [_pb("chr1", 100, strand="+")]
+    # IlmnStrand=TOP, probe strand == TopSeq strand → agreement=True
+    triples = build_valid_triples(ts_aligns, pb_aligns,
+                                   ilmn_strand="TOP",
+                                   probe_seq="ACGT",
+                                   topseq_a="ACGT", topseq_b="ACGG")
+    assert len(triples) == 1
+    allele, ts, pb = triples[0]
+    assert allele == "A"
+    assert ts["Chr"] == "chr1"
+
+
+def test_build_valid_triples_strand_invalid_probe_discarded():
+    """TOP strand marker: probe on opposite strand → StrandAgreementAsExpected=False → discarded."""
+    ts_aligns = {"A": [_ts("chr1", 100, strand="+")], "B": []}
+    pb_aligns = [_pb("chr1", 100, strand="-")]
+    # IlmnStrand=TOP, probe strand != TopSeq strand → agreement=False
+    triples = build_valid_triples(ts_aligns, pb_aligns,
+                                   ilmn_strand="TOP",
+                                   probe_seq="ACGT",
+                                   topseq_a="ACGT", topseq_b="ACGG")
+    assert triples == []
+
+
+def test_build_valid_triples_keeps_highest_overlap_probe():
+    """Two strand-valid probe alignments on same chr → keep the one with higher overlap."""
+    ts = _ts("chr1", 100, cigar="100M")  # spans 100-199
+    ts_aligns = {"A": [ts], "B": []}
+    # pb1 overlaps 80 bp, pb2 overlaps 20 bp
+    pb1 = _pb("chr1", 120, cigar="80M")   # 120-199 → overlap with 100-199 = 80
+    pb2 = _pb("chr1", 180, cigar="20M")   # 180-199 → overlap = 20
+    triples = build_valid_triples(ts_aligns, [pb1, pb2],
+                                   ilmn_strand="TOP",
+                                   probe_seq="ACGT",
+                                   topseq_a="ACGT", topseq_b="ACGG")
+    assert len(triples) == 1
+    _, _, winning_pb = triples[0]
+    assert winning_pb["Pos"] == 120  # pb1 had higher overlap
+
+
+def test_build_valid_triples_unknown_ilmn_strand_keeps_probe():
+    """IlmnStrand unknown → strand check returns N/A → probe treated as valid."""
+    ts_aligns = {"A": [_ts("chr1", 100, strand="+")], "B": []}
+    pb_aligns = [_pb("chr1", 100, strand="-")]
+    triples = build_valid_triples(ts_aligns, pb_aligns,
+                                   ilmn_strand="",
+                                   probe_seq="ACGT",
+                                   topseq_a="ACGT", topseq_b="ACGG")
+    assert len(triples) == 1
+
+
+def test_build_valid_triples_zero_overlap_discarded():
+    """Strand-valid probe on same chr but no overlap → discarded."""
+    ts = _ts("chr1", 100, cigar="50M")   # 100-149
+    pb = _pb("chr1", 200, cigar="50M")   # 200-249 → no overlap
+    ts_aligns = {"A": [ts], "B": []}
+    triples = build_valid_triples({"A": [ts], "B": []}, [pb],
+                                   ilmn_strand="TOP",
+                                   probe_seq="ACGT",
+                                   topseq_a="ACGT", topseq_b="ACGG")
+    assert triples == []
+
+
+def test_build_valid_triples_different_chr_discarded():
+    """Probe on different chromosome than TopSeq → no triple."""
+    ts_aligns = {"A": [_ts("chr1", 100)], "B": []}
+    pb_aligns = [_pb("chr2", 100)]
+    triples = build_valid_triples(ts_aligns, pb_aligns,
+                                   ilmn_strand="TOP",
+                                   probe_seq="ACGT",
+                                   topseq_a="ACGT", topseq_b="ACGG")
+    assert triples == []
