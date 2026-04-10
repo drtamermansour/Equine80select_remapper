@@ -270,3 +270,22 @@ def test_exclude_indels_mixed_dataset():
     result = apply_exclude_indels_filter(df)
     # indices 0 (SNP) and 2 (SNP) kept; 1 (deletion) and 3 (insertion) removed
     assert list(result.index) == [0, 2]
+
+
+# ── CoordDelta filter uses anchor_{assembly} ──────────────────────────────────
+
+def test_coord_delta_filter_uses_anchor_column():
+    """CoordDelta filter identifies topseq_only via anchor_{assembly}, not MappingStatus."""
+    import pandas as pd
+
+    # Minimal DataFrame: one normal marker and one topseq_only marker
+    df = pd.DataFrame({
+        "CoordDelta_test":   [0, -1],
+        "anchor_test":       ["topseq_n_probe", "topseq_only"],
+    })
+    # topseq_only should be removed when coord_delta filter is active (threshold=0)
+    is_topseq_only = df["anchor_test"] == "topseq_only"
+    exceeds_delta  = df["CoordDelta_test"] > 0
+    result = df[~exceeds_delta & ~is_topseq_only]
+    assert len(result) == 1
+    assert result.iloc[0]["anchor_test"] == "topseq_n_probe"

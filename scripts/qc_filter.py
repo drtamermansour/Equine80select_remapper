@@ -494,11 +494,11 @@ def run_qc(args):
 
     # ── Filter 2.5: CoordDelta filter ────────────────────────────────────────
     col_coord_delta  = f"CoordDelta_{assembly}"
-    col_map_status   = f"MappingStatus_{assembly}"
+    col_anchor       = f"anchor_{assembly}"
     if args.coord_delta >= 0:
-        if col_coord_delta not in df_mapq.columns or col_map_status not in df_mapq.columns:
+        if col_coord_delta not in df_mapq.columns or col_anchor not in df_mapq.columns:
             print(f"[qc] WARNING: --coord-delta requested but {col_coord_delta!r} or "
-                  f"{col_map_status!r} column not found in input. Skipping filter. "
+                  f"{col_anchor!r} column not found in input. Skipping filter. "
                   "Re-run remap_manifest.py to generate these columns.")
             df_coord = df_mapq
         else:
@@ -509,7 +509,7 @@ def run_qc(args):
             # topseq_only markers also carry CoordDelta = -1 but have no probe at all;
             # they are explicitly removed whenever the filter is active.
             exceeds_delta  = df_mapq[col_coord_delta] > args.coord_delta
-            is_topseq_only = df_mapq[col_map_status] == "topseq_only"
+            is_topseq_only = df_mapq[col_anchor] == "topseq_only"
             df_coord = df_mapq[~exceeds_delta & ~is_topseq_only].copy()
             n_removed = len(df_mapq) - len(df_coord)
             n_delta   = exceeds_delta.sum()
@@ -590,12 +590,18 @@ def run_qc(args):
         # SNP design-conflict check (original logic)
         snp_pass = snp_mask & (df_coord["_gref"] == df_coord["_genome_ref"])
 
-        # Indel design-conflict check via pysam reference fetch
-        def _indel_passes(row):
-            return check_deletion_ref_match(
-                ref_fasta, row[col_chr], int(row[col_pos]), row["_gref"]
-            )
-        indel_pass = indel_mask & df_coord.apply(_indel_passes, axis=1)
+        # Indel design-conflict check: use RefAltMethodAgreement computed during remapping.
+        # 'NM_mismatch' means the NM-determined Ref allele did not match the genome sequence.
+        # If the column is absent (old CSV), fall back to the original pysam check.
+        col_refalt_agree = f"RefAltMethodAgreement_{assembly}"
+        if col_refalt_agree in df_coord.columns:
+            indel_pass = indel_mask & (df_coord[col_refalt_agree] != "NM_mismatch")
+        else:
+            def _indel_passes(row):
+                return check_deletion_ref_match(
+                    ref_fasta, row[col_chr], int(row[col_pos]), row["_gref"]
+                )
+            indel_pass = indel_mask & df_coord.apply(_indel_passes, axis=1)
 
         matching = df_coord[snp_pass | indel_pass].copy()
     finally:
