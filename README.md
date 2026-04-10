@@ -274,13 +274,13 @@ python scripts/benchmark_cigar_vs_probe.py \
 
 For each marker, two sequences are aligned to the reference with `minimap2 -ax sr -N 5`:
 
-1. **TopGenomicSeq** — the full genomic context `PREFIX[AlleleA/AlleleB]SUFFIX` is split into two candidates (one per allele). Both primary and secondary alignments (up to 5) are retained. Triples are ranked by `min(MAPQ_TopSeq, MAPQ_Probe)` then `AS_TopSeq`. The candidate with lower NM at the winning locus is the reference allele.
+1. **TopGenomicSeq** — the full genomic context `PREFIX[AlleleA/AlleleB]SUFFIX` is split into two candidates (one per allele). Both primary and secondary alignments (up to 5) are retained. Triples are ranked by AS score, then ΔAS, then NM. The candidate with lower NM at the winning locus is the reference allele.
 
 2. **Probe** (`AlleleA_ProbeSeq`, 50 bp) — aligned independently. Must map to the same chromosome and overlap the TopSeq alignment window. No strand constraint — bottom-strand probes align opposite to TopGenomicSeq and are still valid.
 
 **Coordinate selection:** For each mapped marker, the probe coordinate and the CIGAR-derived coordinate from TopGenomicSeq are both computed. `CoordDelta = |probe_coord − CIGAR_coord|`. If `CoordDelta ≥ 2`, the CIGAR coordinate is used as `MapInfo` (benchmark shows ~85% accuracy vs ~4% with probe at delta>10). Otherwise probe is used.
 
-**TopSeq-only rescue:** When no valid (TopSeq × probe) triple exists but TopSeq aligned, the SNP coordinate is derived directly from the TopGenomicSeq CIGAR walk. These markers receive `MappingStatus = topseq_only` (72.9% empirical accuracy vs ground truth). In v2→EquCab3, 1,336 markers are rescued this way.
+**TopSeq-only rescue:** When no valid (TopSeq × probe) triple exists but TopSeq aligned, the SNP coordinate is derived directly from the TopGenomicSeq CIGAR walk. These markers receive `anchor_{assembly} = topseq_only` (72.9% empirical accuracy vs ground truth). In v2→EquCab3, 1,336 markers are rescued this way.
 
 ### Infinium Chemistry
 

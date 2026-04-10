@@ -185,7 +185,7 @@ All column names that embed the assembly name use the string passed via `-a` (e.
 | Column | Type | Meaning |
 |---|---|---|
 | `MAPQ_TopGenomicSeq` | int | MAPQ of winning TopSeq alignment |
-| `MAPQ_Probe` | int | MAPQ of winning probe alignment; `0` for `topseq_only` markers |
+| `MAPQ_Probe` | int | MAPQ of winning probe alignment; `NaN` for `topseq_only` markers |
 | `DeltaScore_TopGenomicSeq` | int | AS gap between 1st and 2nd-best TopSeq alignments; `−1` if fewer than 2 alignments |
 | `QueryCov_TopGenomicSeq` | float | Fraction of TopSeq query in M/=/X aligned ops (excludes soft/hard clips); `0.0` for unmapped |
 | `SoftClipFrac_TopGenomicSeq` | float | Fraction of TopSeq query that is soft-clipped; `0.0` for unmapped |
