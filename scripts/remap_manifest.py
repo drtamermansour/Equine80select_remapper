@@ -582,6 +582,119 @@ def best_probe_rescue(probe_aligns):
     return align, tie
 
 
+def rank_and_resolve(triples, all_ts_aligns, all_pb_aligns, info, assay_type):
+    """
+    Rank valid (allele, ts_align, probe_align) triples and resolve to a winner.
+
+    Ranking steps (applied in order; each step only runs if previous left a tie):
+      0. Unique locus: all triples point to same chr:pos → 'unique'
+      1. AS sum: ts.AS + pb.AS, higher wins → 'AS_resolved'
+      2. ΔAS sum: ΔAS_ts + ΔAS_pb, higher wins → 'dAS_resolved'
+         ΔAS for each align = AS_this - max(AS of other aligns not at this locus)
+      3. NM sum: ts.NM + pb.NM, lower wins → 'NM_resolved'
+      4. CoordDelta: |probe_coord - CIGAR_coord|, lower wins → 'CoordDelta_resolved'
+      5. Scaffold resolved: placed chr over scaffold → 'scaffold_resolved'
+      6. Ambiguous → 'ambiguous'
+
+    Returns one of:
+      ('unique'|'AS_resolved'|'dAS_resolved'|'NM_resolved'|
+       'CoordDelta_resolved'|'scaffold_resolved', allele, ts, pb [,competing])
+      ('ambiguous', competing)
+    """
+    all_ts_flat = [a for aligns in all_ts_aligns.values() for a in aligns]
+    all_pb_flat = list(all_pb_aligns)
+
+    # Step 0: unique locus check
+    unique_loci = {(ts["Chr"], ts["Pos"]) for _, ts, _ in triples}
+    if len(unique_loci) == 1:
+        allele, ts, pb = triples[0]
+        return ("unique", allele, ts, pb)
+
+    # Step 1: AS sum
+    def _as_sum(triple):
+        _, ts, pb = triple
+        return ts.get("AS", -1) + pb.get("AS", -1)
+
+    top_as = max(_as_sum(t) for t in triples)
+    top = [t for t in triples if _as_sum(t) == top_as]
+    top_loci = {(ts["Chr"], ts["Pos"]) for _, ts, _ in top}
+    if len(top_loci) == 1:
+        competing = _make_competing_rows(top, "AS_tie")
+        allele, ts, pb = top[0]
+        return ("AS_resolved", allele, ts, pb, competing)
+
+    # Step 2: ΔAS sum
+    def _das_sum(triple):
+        _, ts, pb = triple
+        other_ts = max(
+            (a.get("AS", -1) for a in all_ts_flat
+             if (a["Chr"], a["Pos"]) != (ts["Chr"], ts["Pos"])),
+            default=None,
+        )
+        das_ts = ts.get("AS", -1) - other_ts if other_ts is not None else ts.get("AS", -1)
+        other_pb = max(
+            (a.get("AS", -1) for a in all_pb_flat
+             if (a["Chr"], a["Pos"]) != (pb["Chr"], pb["Pos"])),
+            default=None,
+        )
+        das_pb = pb.get("AS", -1) - other_pb if other_pb is not None else pb.get("AS", -1)
+        return das_ts + das_pb
+
+    top_das = max(_das_sum(t) for t in top)
+    top = [t for t in top if _das_sum(t) == top_das]
+    top_loci = {(ts["Chr"], ts["Pos"]) for _, ts, _ in top}
+    if len(top_loci) == 1:
+        competing = _make_competing_rows(top, "dAS_tie")
+        allele, ts, pb = top[0]
+        return ("dAS_resolved", allele, ts, pb, competing)
+
+    # Step 3: NM sum
+    def _nm_sum(triple):
+        _, ts, pb = triple
+        return ts.get("NM", 999) + pb.get("NM", 999)
+
+    min_nm = min(_nm_sum(t) for t in top)
+    top = [t for t in top if _nm_sum(t) == min_nm]
+    top_loci = {(ts["Chr"], ts["Pos"]) for _, ts, _ in top}
+    if len(top_loci) == 1:
+        competing = _make_competing_rows(top, "NM_tie")
+        allele, ts, pb = top[0]
+        return ("NM_resolved", allele, ts, pb, competing)
+
+    # Step 4: CoordDelta — compute for all surviving triples
+    def _coord_delta(triple):
+        _, ts, pb = triple
+        target_idx = info["PreLen"] if ts["Strand"] == "+" else info["PostLen"]
+        c_pos = get_probe_coordinate(pb["Pos"], pb["Cigar"], pb["Strand"], assay_type)
+        cigar_coord, in_sc = parse_cigar_to_ref_pos(ts["Pos"], ts["Cigar"], target_idx)
+        if in_sc or cigar_coord == 0:
+            return float("inf")  # unavailable → treat as worst
+        return abs(c_pos - cigar_coord)
+
+    min_delta = min(_coord_delta(t) for t in top)
+    if min_delta < float("inf"):
+        top_cd = [t for t in top if _coord_delta(t) == min_delta]
+        top_loci = {(ts["Chr"], ts["Pos"]) for _, ts, _ in top_cd}
+        if len(top_loci) == 1:
+            competing = _make_competing_rows(top, "CoordDelta_tie")
+            allele, ts, pb = top_cd[0]
+            return ("CoordDelta_resolved", allele, ts, pb, competing)
+        top = top_cd
+
+    # Step 5: scaffold_resolved
+    placed    = [(a, ts, pb) for a, ts, pb in top if     is_placed_chromosome(ts["Chr"])]
+    scaffolds = [(a, ts, pb) for a, ts, pb in top if not is_placed_chromosome(ts["Chr"])]
+    placed_loci = {(ts["Chr"], ts["Pos"]) for _, ts, _ in placed}
+    if placed and scaffolds and len(placed_loci) == 1:
+        competing = _make_competing_rows(top, "scaffold_resolved")
+        allele, ts, pb = placed[0]
+        return ("scaffold_resolved", allele, ts, pb, competing)
+
+    # Step 6: ambiguous
+    competing = _make_competing_rows(top, "position_tie")
+    return ("ambiguous", competing)
+
+
 def select_best_pair(topseq_aligns, probe_aligns):
     """
     Finds the best (TopGenomicSeq × probe) alignment pair for a single marker.

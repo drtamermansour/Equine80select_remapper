@@ -27,6 +27,7 @@ from remap_manifest import (
     build_valid_triples,
     best_topseq_rescue,
     best_probe_rescue,
+    rank_and_resolve,
 )
 
 
@@ -1015,3 +1016,81 @@ def test_probe_rescue_ambiguous():
     pb, tie = best_probe_rescue(pb_aligns)
     assert pb is None
     assert tie == "ambiguous"
+
+
+# ── rank_and_resolve ──────────────────────────────────────────────────────────
+
+def _info(pre_len=50, post_len=50):
+    return {"PreLen": pre_len, "PostLen": post_len}
+
+
+def test_rank_and_resolve_unique():
+    """All triples point to same locus → unique."""
+    ts = _ts("chr1", 100, as_score=120, nm=0)
+    pb = _pb("chr1", 100, as_score=80, nm=0)
+    triples = [("A", ts, pb)]
+    result = rank_and_resolve(triples,
+                               all_ts_aligns={"A": [ts], "B": []},
+                               all_pb_aligns=[pb],
+                               info=_info(), assay_type="II")
+    assert result[0] == "unique"
+    assert result[1] == "A"
+
+
+def test_rank_and_resolve_as_resolved():
+    """Two loci, different AS sum → AS_resolved."""
+    ts_a = _ts("chr1", 100, as_score=150, nm=0)
+    ts_b = _ts("chr2", 200, as_score=100, nm=0)
+    pb_a = _pb("chr1", 100, as_score=80, nm=0)
+    pb_b = _pb("chr2", 200, as_score=80, nm=0)
+    triples = [("A", ts_a, pb_a), ("B", ts_b, pb_b)]
+    result = rank_and_resolve(triples,
+                               all_ts_aligns={"A": [ts_a], "B": [ts_b]},
+                               all_pb_aligns=[pb_a, pb_b],
+                               info=_info(), assay_type="II")
+    assert result[0] == "AS_resolved"
+    assert result[2]["Chr"] == "chr1"
+
+
+def test_rank_and_resolve_nm_resolved():
+    """Two loci, same AS, different NM sum → NM_resolved."""
+    ts_a = _ts("chr1", 100, as_score=120, nm=0)
+    ts_b = _ts("chr2", 200, as_score=120, nm=3)
+    pb_a = _pb("chr1", 100, as_score=80, nm=0)
+    pb_b = _pb("chr2", 200, as_score=80, nm=3)
+    triples = [("A", ts_a, pb_a), ("B", ts_b, pb_b)]
+    result = rank_and_resolve(triples,
+                               all_ts_aligns={"A": [ts_a], "B": [ts_b]},
+                               all_pb_aligns=[pb_a, pb_b],
+                               info=_info(), assay_type="II")
+    assert result[0] == "NM_resolved"
+    assert result[2]["Chr"] == "chr1"
+
+
+def test_rank_and_resolve_scaffold_resolved():
+    """Placed chr + scaffold, same metrics → scaffold_resolved."""
+    ts_p = _ts("chr1",     100, as_score=120, nm=0)
+    ts_s = _ts("NW_12345", 200, as_score=120, nm=0)
+    pb_p = _pb("chr1",     100, as_score=80, nm=0)
+    pb_s = _pb("NW_12345", 200, as_score=80, nm=0)
+    triples = [("A", ts_p, pb_p), ("B", ts_s, pb_s)]
+    result = rank_and_resolve(triples,
+                               all_ts_aligns={"A": [ts_p], "B": [ts_s]},
+                               all_pb_aligns=[pb_p, pb_s],
+                               info=_info(), assay_type="II")
+    assert result[0] == "scaffold_resolved"
+    assert result[2]["Chr"] == "chr1"
+
+
+def test_rank_and_resolve_ambiguous():
+    """Two placed chrs, identical metrics → ambiguous."""
+    ts_a = _ts("chr1", 100, as_score=120, nm=0)
+    ts_b = _ts("chr2", 200, as_score=120, nm=0)
+    pb_a = _pb("chr1", 100, as_score=80, nm=0)
+    pb_b = _pb("chr2", 200, as_score=80, nm=0)
+    triples = [("A", ts_a, pb_a), ("B", ts_b, pb_b)]
+    result = rank_and_resolve(triples,
+                               all_ts_aligns={"A": [ts_a], "B": [ts_b]},
+                               all_pb_aligns=[pb_a, pb_b],
+                               info=_info(), assay_type="II")
+    assert result[0] == "ambiguous"
