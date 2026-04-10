@@ -23,6 +23,7 @@ from remap_manifest import (
     probe_topseq_orientation,
     compute_probe_strand_agreement,
     extract_candidates,
+    compute_alignment_status,
 )
 
 
@@ -794,3 +795,47 @@ def test_cigar_coord_not_overridden_when_softclip():
             coord_source = "probe"
     assert coord_source == "probe"
     assert final_pos == c_pos
+
+
+# ── compute_alignment_status ──────────────────────────────────────────────────
+
+def test_alignment_status_gp1_both_topseq_and_probe():
+    """Both alleles + probe aligned → gp1."""
+    ts = {"A": [_ts("chr1", 100)], "B": [_ts("chr1", 100, nm=1)]}
+    pb = [_pb("chr1", 100)]
+    assert compute_alignment_status(ts, pb) == "gp1"
+
+
+def test_alignment_status_gp2_one_topseq_and_probe():
+    """Only allele A + probe → gp2."""
+    ts = {"A": [_ts("chr1", 100)], "B": []}
+    pb = [_pb("chr1", 100)]
+    assert compute_alignment_status(ts, pb) == "gp2"
+
+
+def test_alignment_status_gp3_both_topseq_no_probe():
+    """Both alleles, no probe alignments → gp3."""
+    ts = {"A": [_ts("chr1", 100)], "B": [_ts("chr1", 100, nm=1)]}
+    pb = []
+    assert compute_alignment_status(ts, pb) == "gp3"
+
+
+def test_alignment_status_gp4_one_topseq_no_probe():
+    """Only allele B, no probe → gp4."""
+    ts = {"A": [], "B": [_ts("chr1", 100)]}
+    pb = []
+    assert compute_alignment_status(ts, pb) == "gp4"
+
+
+def test_alignment_status_gp5_probe_only():
+    """No TopSeq at all, probe aligned → gp5."""
+    ts = {"A": [], "B": []}
+    pb = [_pb("chr1", 100)]
+    assert compute_alignment_status(ts, pb) == "gp5"
+
+
+def test_alignment_status_unmapped():
+    """Nothing aligned → unmapped."""
+    ts = {"A": [], "B": []}
+    pb = []
+    assert compute_alignment_status(ts, pb) == "unmapped"

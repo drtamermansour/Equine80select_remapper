@@ -363,6 +363,43 @@ def parse_probe_sam(sam_path):
             results.setdefault(cols[0], []).append(entry)
     return results
 
+
+# ── ALIGNMENT STATUS ─────────────────────────────────────────────────────────
+
+def compute_alignment_status(ts_aligns, probe_aligns):
+    """
+    Raw alignment census — which sources produced at least one mapped hit.
+    Called before any filtering or decision logic; 'aligned' means any mapped
+    hit exists (any MAPQ, any chromosome).
+
+    Returns one of: 'gp1', 'gp2', 'gp3', 'gp4', 'gp5', 'unmapped'.
+
+    gp1: both TopSeq alleles + probe aligned
+    gp2: exactly one TopSeq allele + probe aligned
+    gp3: both TopSeq alleles, no probe
+    gp4: exactly one TopSeq allele, no probe
+    gp5: probe only (no TopSeq)
+    unmapped: nothing aligned
+    """
+    has_a     = bool(ts_aligns.get("A"))
+    has_b     = bool(ts_aligns.get("B"))
+    has_probe = bool(probe_aligns)
+    both_ts   = has_a and has_b
+    one_ts    = has_a ^ has_b  # XOR: exactly one
+
+    if both_ts and has_probe:
+        return "gp1"
+    if one_ts and has_probe:
+        return "gp2"
+    if both_ts and not has_probe:
+        return "gp3"
+    if one_ts and not has_probe:
+        return "gp4"
+    if has_probe and not has_a and not has_b:
+        return "gp5"
+    return "unmapped"
+
+
 # ── PAIR SELECTION ────────────────────────────────────────────────────────────
 
 def is_placed_chromosome(name):
