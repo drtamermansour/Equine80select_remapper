@@ -1005,6 +1005,15 @@ class DecisionCounters:
     topseq_rescue_failed_refalt:   int = 0   # NM tie unresolvable by ref lookup
     ref_base_mismatch:             int = 0
     strand_agreement_unexpected:   int = 0   # StrandAgreementAsExpected == False
+    # anchor path counters
+    final_probe_only:            int = 0
+    final_probe_rescue_ambiguous: int = 0
+    # alignment group counters
+    align_gp1: int = 0
+    align_gp2: int = 0
+    align_gp3: int = 0
+    align_gp4: int = 0
+    align_gp5: int = 0
 
     def format_summary(self) -> str:
         W = 55
@@ -1054,6 +1063,15 @@ class DecisionCounters:
         row("nm-position-resolved:", self.final_nm_position_resolved)
         row("scaffold-resolved (scaffold_resolved_markers.csv):", self.final_scaffold_resolved)
         row("topseq-only (CIGAR rescue, no probe):", self.final_topseq_only)
+        row("probe_only markers rescued:",       self.final_probe_only)
+        row("probe_only rescue → ambiguous:",    self.final_probe_rescue_ambiguous)
+        lines.append("")
+        lines.append("Alignment groups:")
+        row("gp1 (both TopSeq + probe):",  self.align_gp1)
+        row("gp2 (one TopSeq + probe):",   self.align_gp2)
+        row("gp3 (both TopSeq, no probe):", self.align_gp3)
+        row("gp4 (one TopSeq, no probe):",  self.align_gp4)
+        row("gp5 (probe only):",           self.align_gp5)
         row("unmapped  (Chr=0):", self.final_unmapped)
         row("ambiguous (Chr=0 + ambiguous_markers.csv):", self.final_ambiguous)
         lines.append("")
@@ -1153,7 +1171,10 @@ def run_remapping(args):
 
     # ── Step 5: Resolve coordinates for each marker ──────────────────────────
     print("[remap] Resolving coordinates...")
-    col_status = f"MappingStatus_{assembly}"
+    col_align_status = f"AlignmentStatus_{assembly}"
+    col_anchor       = f"anchor_{assembly}"
+    col_tie          = f"tie_{assembly}"
+    col_refalt_agree = f"RefAltMethodAgreement_{assembly}"
     col_delta  = "DeltaScore_TopGenomicSeq"
     col_qcov   = "QueryCov_TopGenomicSeq"
     col_scfrac = "SoftClipFrac_TopGenomicSeq"
@@ -1178,7 +1199,10 @@ def run_remapping(args):
         col_ref_match: [],
         col_probe_strand: [],
         col_strand_agree: [],
-        col_status: [],
+        col_align_status: [],
+        col_anchor:       [],
+        col_tie:          [],
+        col_refalt_agree: [],
     }
     ambiguous_rows = []
     scaffold_rows  = []
@@ -1189,7 +1213,7 @@ def run_remapping(args):
     fasta = pysam.FastaFile(args.reference)
     try:
 
-        def _append_unmapped_cols(status):
+        def _append_unmapped_cols(anchor, tie="N/A"):
             new_cols[col_chr].append("0")
             new_cols[col_pos].append(0)
             new_cols[col_strand].append("N/A")
@@ -1207,7 +1231,10 @@ def run_remapping(args):
             new_cols[col_ref_match].append("N/A")
             new_cols[col_probe_strand].append("N/A")
             new_cols[col_strand_agree].append("N/A")
-            new_cols[col_status].append(status)
+            new_cols[col_align_status].append("N/A")  # overwritten by caller when known
+            new_cols[col_anchor].append(anchor)
+            new_cols[col_tie].append(tie)
+            new_cols[col_refalt_agree].append("N/A")
 
         for _, row in df.iterrows():
             name      = row["Name"]
@@ -1235,7 +1262,7 @@ def run_remapping(args):
                 counters.topseq_neither += 1
 
             if not info or (not has_a and not has_b):
-                _append_unmapped_cols("unmapped")
+                _append_unmapped_cols("N/A", "N/A")
                 counters.final_unmapped += 1
                 continue
 
@@ -1247,7 +1274,7 @@ def run_remapping(args):
                 # Derive coordinate purely from TopGenomicSeq CIGAR walk.
                 best_allele, best_ts = _best_topseq_for_rescue(ts_aligns)
                 if best_ts is None:
-                    _append_unmapped_cols("unmapped")
+                    _append_unmapped_cols("N/A", "N/A")
                     counters.final_unmapped += 1
                     continue
                 target_idx = info["PreLen"] if best_ts["Strand"] == "+" else info["PostLen"]
@@ -1257,7 +1284,7 @@ def run_remapping(args):
                 if cigar_in_sc or cigar_coord == 0:
                     # TopSeq aligned but SNP target index falls in soft-clipped region;
                     # no reference coordinate can be derived from this alignment.
-                    _append_unmapped_cols("unmapped")
+                    _append_unmapped_cols("N/A", "N/A")
                     counters.topseq_rescue_failed_softclip += 1
                     counters.final_unmapped += 1
                     continue
@@ -1267,7 +1294,7 @@ def run_remapping(args):
                         fasta, best_ts["Chr"], cigar_coord, info["AlleleA"], info["AlleleB"], best_ts["Strand"]
                     )
                 if ref_alt is None:
-                    _append_unmapped_cols("unmapped")
+                    _append_unmapped_cols("N/A", "N/A")
                     counters.topseq_rescue_failed_refalt += 1
                     counters.final_unmapped += 1
                     continue
@@ -1310,7 +1337,10 @@ def run_remapping(args):
                 new_cols[col_ref_match].append(ref_base_match_str)
                 new_cols[col_probe_strand].append("N/A")   # no probe alignment
                 new_cols[col_strand_agree].append("N/A")   # no probe alignment
-                new_cols[col_status].append("topseq_only")
+                new_cols[col_align_status].append("topseq_only")
+                new_cols[col_anchor].append("N/A")
+                new_cols[col_tie].append("N/A")
+                new_cols[col_refalt_agree].append("N/A")
                 counters.final_topseq_only += 1
                 continue
 
@@ -1319,7 +1349,7 @@ def run_remapping(args):
             if result[0] == "ambiguous":
                 _, competing = result
                 ambiguous_rows.extend({"Name": name, **r} for r in competing)
-                _append_unmapped_cols("ambiguous")
+                _append_unmapped_cols("N/A", "ambiguous")
                 counters.position_ambiguous += 1
                 counters.final_ambiguous    += 1
                 continue
@@ -1360,7 +1390,7 @@ def run_remapping(args):
                         pairs.append((other_allele, other_ts, winning_pb))
                     ambiguous_rows.extend({"Name": name, **r}
                                           for r in _make_competing_rows(pairs, "NM_tie"))
-                    _append_unmapped_cols("ambiguous")
+                    _append_unmapped_cols("N/A", "ambiguous")
                     counters.ref_alt_nm_tie  += 1
                     counters.final_ambiguous += 1
                     continue
@@ -1476,7 +1506,10 @@ def run_remapping(args):
             new_cols[col_ref_match].append(ref_base_match_str)
             new_cols[col_probe_strand].append(pb_strand)
             new_cols[col_strand_agree].append(sa_expected)
-            new_cols[col_status].append(status)
+            new_cols[col_align_status].append(status)
+            new_cols[col_anchor].append("N/A")
+            new_cols[col_tie].append("N/A")
+            new_cols[col_refalt_agree].append("N/A")
 
             if status == "scaffold_resolved":
                 counters.final_scaffold_resolved += 1
