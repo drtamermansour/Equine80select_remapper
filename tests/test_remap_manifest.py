@@ -412,7 +412,7 @@ def _mock_fasta(return_value):
 def test_resolve_ref_matches_allele_a():
     """Reference base == allele A → returns (A, B)."""
     fasta = _mock_fasta("A")
-    result = resolve_ref_from_genome(fasta, "1", 1000, "A", "G")
+    result = resolve_ref_from_genome(fasta, "1", 1000, "A", "G", "+")
     assert result == ("A", "G")
     fasta.fetch.assert_called_once_with("1", 999, 1000)
 
@@ -420,14 +420,14 @@ def test_resolve_ref_matches_allele_a():
 def test_resolve_ref_matches_allele_b():
     """Reference base == allele B → returns (B, A)."""
     fasta = _mock_fasta("G")
-    result = resolve_ref_from_genome(fasta, "5", 500, "A", "G")
+    result = resolve_ref_from_genome(fasta, "5", 500, "A", "G", "+")
     assert result == ("G", "A")
 
 
 def test_resolve_ref_matches_neither():
     """Reference base == neither allele (true triallelic) → returns None."""
     fasta = _mock_fasta("C")
-    result = resolve_ref_from_genome(fasta, "3", 200, "A", "G")
+    result = resolve_ref_from_genome(fasta, "3", 200, "A", "G", "+")
     assert result is None
 
 
@@ -435,8 +435,25 @@ def test_resolve_ref_fetch_error():
     """pysam raises ValueError on unknown contig → returns None gracefully."""
     fasta = MagicMock()
     fasta.fetch.side_effect = ValueError("unknown contig")
-    result = resolve_ref_from_genome(fasta, "chrUn_99", 100, "A", "G")
+    result = resolve_ref_from_genome(fasta, "chrUn_99", 100, "A", "G", "+")
     assert result is None
+
+
+def test_resolve_ref_minus_strand_complements_alleles():
+    """On minus strand, alleles are complemented before comparing to fwd genome base.
+    Allele A='C' on minus strand → complement is 'G'. Genome returns 'G' → match."""
+    fasta = _mock_fasta("G")
+    result = resolve_ref_from_genome(fasta, "1", 1000, "C", "A", "-")
+    # 'C' complements to 'G' which matches → returns (C, A) in alignment-strand orientation
+    assert result == ("C", "A")
+
+
+def test_resolve_ref_minus_strand_b_matches():
+    """On minus strand, allele B='T' → complement 'A'. Genome returns 'A' → match."""
+    fasta = _mock_fasta("A")
+    result = resolve_ref_from_genome(fasta, "1", 1000, "C", "T", "-")
+    # 'C' complements to 'G' (no match), 'T' complements to 'A' (match) → returns (T, C)
+    assert result == ("T", "C")
 
 
 # ── DecisionCounters ──────────────────────────────────────────────────────────

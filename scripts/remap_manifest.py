@@ -39,6 +39,9 @@ import pysam
 # IUPAC ambiguity codes (excluding N/n) → A; str.translate is O(n) C-level loop
 _IUPAC_TO_A = str.maketrans("MRWSYKBDHVmrwsykbdhv", "A" * 20)
 
+# Nucleotide complement lookup (single-base)
+_COMP = {"A": "T", "T": "A", "C": "G", "G": "C"}
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -354,6 +357,7 @@ def parse_probe_sam(sam_path):
                 "Strand": "-" if flag & 16 else "+",
                 "MAPQ": int(cols[4]),
                 "AS": _get_as(cols),
+                "NM": _get_nm(cols),
                 "End": get_alignment_end(pos, cigar),
             }
             results.setdefault(cols[0], []).append(entry)
@@ -546,27 +550,38 @@ def determine_ref_alt(winning_allele, winning_ts, topseq_aligns, candidates_info
     return ref_char, alt_char
 
 
-def resolve_ref_from_genome(fasta, chr_, var_pos, allele_a_char, allele_b_char):
+def resolve_ref_from_genome(fasta, chr_, var_pos, allele_a_char, allele_b_char, strand):
     """
-    Attempt to break an NM tie by fetching the reference base at the variant
-    position and comparing it to the two alleles.
+    Fetch the reference base at var_pos and determine which allele is Ref.
+
+    allele_a_char / allele_b_char are in alignment-strand orientation.
+    For minus-strand markers these are complemented before comparison with the
+    forward-strand genome base.
 
     fasta          : open pysam.FastaFile
-    chr_           : chromosome name (must match FASTA contig names)
+    chr_           : chromosome name
     var_pos        : 1-based variant position
-    allele_a_char  : single nucleotide for allele A
-    allele_b_char  : single nucleotide for allele B
+    allele_a_char  : single nucleotide for allele A (alignment strand)
+    allele_b_char  : single nucleotide for allele B (alignment strand)
+    strand         : '+' or '-'
 
-    Returns (ref_char, alt_char) if the reference base matches one allele.
-    Returns None if the reference matches neither (true triallelic or fetch error).
+    Returns (ref_char, alt_char) in alignment-strand orientation, or None.
     """
     try:
         ref_base = fasta.fetch(chr_, var_pos - 1, var_pos).upper()
     except (ValueError, KeyError):
         return None
-    if ref_base == allele_a_char:
+
+    if strand == "-":
+        cmp_a = _COMP.get(allele_a_char, allele_a_char)
+        cmp_b = _COMP.get(allele_b_char, allele_b_char)
+    else:
+        cmp_a = allele_a_char
+        cmp_b = allele_b_char
+
+    if ref_base == cmp_a:
         return allele_a_char, allele_b_char
-    if ref_base == allele_b_char:
+    if ref_base == cmp_b:
         return allele_b_char, allele_a_char
     return None
 
@@ -811,8 +826,6 @@ def run_remapping(args):
             new_cols[col_strand_agree].append("N/A")
             new_cols[col_status].append(status)
 
-        _COMP = {"A": "T", "T": "A", "C": "G", "G": "C"}
-
         for _, row in df.iterrows():
             name      = row["Name"]
             ts_aligns = raw_topseq.get(name, {})
@@ -868,7 +881,7 @@ def run_remapping(args):
                 ref_alt = determine_ref_alt(best_allele, best_ts, ts_aligns, info)
                 if ref_alt is None:
                     ref_alt = resolve_ref_from_genome(
-                        fasta, best_ts["Chr"], cigar_coord, info["AlleleA"], info["AlleleB"]
+                        fasta, best_ts["Chr"], cigar_coord, info["AlleleA"], info["AlleleB"], best_ts["Strand"]
                     )
                 if ref_alt is None:
                     _append_unmapped_cols("unmapped")
@@ -950,7 +963,7 @@ def run_remapping(args):
             if ref_alt is None:
                 # Attempt to break NM tie by reference genome lookup at the variant position
                 ref_alt = resolve_ref_from_genome(
-                    fasta, winning_ts["Chr"], c_pos, info["AlleleA"], info["AlleleB"]
+                    fasta, winning_ts["Chr"], c_pos, info["AlleleA"], info["AlleleB"], winning_ts["Strand"]
                 )
                 if ref_alt is None:
                     # True triallelic — record both allele alignments for transparency
