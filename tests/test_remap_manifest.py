@@ -1190,6 +1190,16 @@ def test_refalt_v2_snp_ambiguous_both_fail():
     assert result == (None, None, "ambiguous")
 
 
+def test_refalt_v2_indel_probe_only_ambiguous():
+    """Indel marker with probe-only (no winning_ts) → ambiguous, not NM_tied."""
+    info = {"AlleleA": "AT", "AlleleB": ""}
+    fasta = MagicMock()
+    result = determine_ref_alt_v2(
+        None, None, {}, info, fasta, "chr1", 1000, "+"
+    )
+    assert result == (None, None, "ambiguous")
+
+
 def test_refalt_v2_deletion_nm_validated():
     """Deletion marker: NM determines ref, genome fetch confirms → NM_validated."""
     ts_a = _ts("chr1", 1000, nm=0)   # allele A = "AT" (ref = longer)

@@ -916,7 +916,7 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
             nm_result = determine_ref_alt(winning_allele, winning_ts,
                                            ts_aligns, candidates_info)
         if nm_result is None:
-            return None, None, "ambiguous" if winning_allele is not None else "NM_tied"
+            return None, None, "ambiguous"
 
         ref_char, alt_char = nm_result
         gref = ref_char  # longer or non-empty allele
