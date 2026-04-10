@@ -882,6 +882,93 @@ def resolve_ref_from_genome(fasta, chr_, var_pos, allele_a_char, allele_b_char, 
     return None
 
 
+def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
+                          candidates_info, fasta, chr_, final_pos, strand):
+    """
+    Determine Ref/Alt alleles for a mapped marker.
+
+    Called after coordinate computation so final_pos = MapInfo (post-CoordDelta).
+
+    For SNPs (both alleles are single nucleotides):
+      - Genome lookup (primary): resolve_ref_from_genome → strand-aware.
+      - NM comparison (parallel): determine_ref_alt when TopSeq aligned.
+      - Returns (ref_char, alt_char, agreement_str).
+      - agreement_str: 'NM_match'|'NM_unmatch'|'NM_tied'|'NM_N/A'|'NM_only'|'ambiguous'
+
+    For indels (at least one allele is multi-base or empty):
+      - NM comparison is primary determination.
+      - Deletions (len(gref)>=1): genome fetch validates the NM-determined Ref.
+      - Insertions (gref=''): genome validation not applicable.
+      - agreement_str: 'NM_validated'|'NM_mismatch'|'NM_tied'|'NM_N/A'|'ambiguous'
+
+    winning_allele: 'A', 'B', or None (probe_only)
+    winning_ts    : alignment dict or None (probe_only)
+    Returns (ref_char, alt_char, agreement_str) or (None, None, 'ambiguous').
+    """
+    allele_a = candidates_info["AlleleA"]
+    allele_b = candidates_info["AlleleB"]
+    is_indel = len(allele_a) != 1 or len(allele_b) != 1
+
+    if is_indel:
+        # NM comparison is the only determination method for indels
+        nm_result = None
+        if winning_allele is not None and winning_ts is not None:
+            nm_result = determine_ref_alt(winning_allele, winning_ts,
+                                           ts_aligns, candidates_info)
+        if nm_result is None:
+            return None, None, "ambiguous" if winning_allele is not None else "NM_tied"
+
+        ref_char, alt_char = nm_result
+        gref = ref_char  # longer or non-empty allele
+
+        if gref == "":
+            # Insertion: ref is empty string, nothing to validate
+            return ref_char, alt_char, "NM_N/A"
+
+        # Deletion: validate gref against genome
+        try:
+            fetched = fasta.fetch(chr_, final_pos - 1,
+                                   final_pos - 1 + len(gref)).upper()
+        except (ValueError, KeyError):
+            return ref_char, alt_char, "NM_mismatch"
+
+        agreement = "NM_validated" if fetched == gref.upper() else "NM_mismatch"
+        return ref_char, alt_char, agreement
+
+    # ── SNP path ──────────────────────────────────────────────────────────────
+    # Method 1: genome lookup (primary)
+    genome_result = resolve_ref_from_genome(
+        fasta, chr_, final_pos, allele_a, allele_b, strand
+    )
+
+    # Method 2: NM comparison (parallel; only when TopSeq aligned)
+    nm_result = None
+    nm_tied   = False
+    if winning_allele is not None and winning_ts is not None:
+        nr = determine_ref_alt(winning_allele, winning_ts, ts_aligns, candidates_info)
+        if nr is None:
+            nm_tied = True
+        else:
+            nm_result = nr
+
+    if genome_result is not None:
+        if winning_allele is None:
+            # probe_only: no NM available
+            return genome_result[0], genome_result[1], "NM_N/A"
+        if nm_tied:
+            return genome_result[0], genome_result[1], "NM_tied"
+        if nm_result is None:
+            return genome_result[0], genome_result[1], "NM_N/A"
+        agreement = "NM_match" if genome_result == nm_result else "NM_unmatch"
+        return genome_result[0], genome_result[1], agreement
+
+    # Genome lookup failed
+    if nm_result is not None:
+        return nm_result[0], nm_result[1], "NM_only"
+
+    return None, None, "ambiguous"
+
+
 # ── DECISION COUNTERS ─────────────────────────────────────────────────────────
 
 @dataclass

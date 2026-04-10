@@ -28,6 +28,7 @@ from remap_manifest import (
     best_topseq_rescue,
     best_probe_rescue,
     rank_and_resolve,
+    determine_ref_alt_v2,
 )
 
 
@@ -1094,3 +1095,143 @@ def test_rank_and_resolve_ambiguous():
                                all_pb_aligns=[pb_a, pb_b],
                                info=_info(), assay_type="II")
     assert result[0] == "ambiguous"
+
+
+# ── determine_ref_alt_v2 ──────────────────────────────────────────────────────
+
+def _fasta_returning(base):
+    f = MagicMock()
+    f.fetch.return_value = base
+    return f
+
+
+def test_refalt_v2_snp_nm_match():
+    """Genome says A, NM says A is ref → NM_match."""
+    ts_a = _ts("chr1", 1000, nm=0)
+    ts_b = _ts("chr1", 1000, nm=1)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "A", "AlleleB": "G"}
+    fasta = _fasta_returning("A")   # genome = A = allele A on + strand
+    ref, alt, agree = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    assert ref == "A"
+    assert alt == "G"
+    assert agree == "NM_match"
+
+
+def test_refalt_v2_snp_nm_unmatch():
+    """Genome says G (allele B), NM says A is ref → NM_unmatch, genome wins."""
+    ts_a = _ts("chr1", 1000, nm=0)
+    ts_b = _ts("chr1", 1000, nm=1)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "A", "AlleleB": "G"}
+    fasta = _fasta_returning("G")   # genome = G = allele B
+    ref, alt, agree = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    assert ref == "G"
+    assert alt == "A"
+    assert agree == "NM_unmatch"
+
+
+def test_refalt_v2_snp_nm_tied():
+    """NM is tied → genome lookup used, agreement = NM_tied."""
+    ts_a = _ts("chr1", 1000, nm=1)
+    ts_b = _ts("chr1", 1000, nm=1)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "A", "AlleleB": "G"}
+    fasta = _fasta_returning("A")
+    ref, alt, agree = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    assert ref == "A"
+    assert alt == "G"
+    assert agree == "NM_tied"
+
+
+def test_refalt_v2_snp_nm_na_probe_only():
+    """probe_only: no winning_ts passed (None) → NM_N/A, genome primary."""
+    info = {"AlleleA": "A", "AlleleB": "G"}
+    fasta = _fasta_returning("G")
+    ref, alt, agree = determine_ref_alt_v2(
+        None, None, {}, info, fasta, "chr1", 1000, "+"
+    )
+    assert ref == "G"
+    assert alt == "A"
+    assert agree == "NM_N/A"
+
+
+def test_refalt_v2_snp_nm_only_genome_fails():
+    """Genome lookup fails (triallelic), NM succeeds → NM_only."""
+    ts_a = _ts("chr1", 1000, nm=0)
+    ts_b = _ts("chr1", 1000, nm=2)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "A", "AlleleB": "G"}
+    fasta = _fasta_returning("C")   # neither allele
+    ref, alt, agree = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    assert ref == "A"
+    assert alt == "G"
+    assert agree == "NM_only"
+
+
+def test_refalt_v2_snp_ambiguous_both_fail():
+    """Both methods fail → ambiguous (None, None, 'ambiguous')."""
+    ts_a = _ts("chr1", 1000, nm=1)
+    ts_b = _ts("chr1", 1000, nm=1)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "A", "AlleleB": "G"}
+    fasta = _fasta_returning("C")   # neither allele
+    result = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    assert result == (None, None, "ambiguous")
+
+
+def test_refalt_v2_deletion_nm_validated():
+    """Deletion marker: NM determines ref, genome fetch confirms → NM_validated."""
+    ts_a = _ts("chr1", 1000, nm=0)   # allele A = "AT" (ref = longer)
+    ts_b = _ts("chr1", 1000, nm=2)   # allele B = "" (alt = deletion)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "AT", "AlleleB": ""}
+    fasta = MagicMock()
+    fasta.fetch.return_value = "AT"  # genome matches gref = "AT"
+    ref, alt, agree = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    assert ref == "AT"
+    assert alt == ""
+    assert agree == "NM_validated"
+
+
+def test_refalt_v2_deletion_nm_mismatch():
+    """Deletion marker: NM says AT is ref, genome returns 'GC' → NM_mismatch."""
+    ts_a = _ts("chr1", 1000, nm=0)
+    ts_b = _ts("chr1", 1000, nm=2)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "AT", "AlleleB": ""}
+    fasta = MagicMock()
+    fasta.fetch.return_value = "GC"
+    ref, alt, agree = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    assert ref == "AT"
+    assert alt == ""
+    assert agree == "NM_mismatch"
+
+
+def test_refalt_v2_insertion_nm_na():
+    """Insertion marker (gref=''): genome validation not applicable → NM_N/A."""
+    ts_a = _ts("chr1", 1000, nm=0)   # allele A = "" (ref = insertion ref = empty)
+    ts_b = _ts("chr1", 1000, nm=2)   # allele B = "TCG" (alt = inserted seq)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "", "AlleleB": "TCG"}
+    fasta = MagicMock()
+    ref, alt, agree = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    assert ref == ""
+    assert alt == "TCG"
+    assert agree == "NM_N/A"
