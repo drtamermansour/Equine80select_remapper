@@ -486,6 +486,102 @@ def build_valid_triples(ts_aligns, probe_aligns, ilmn_strand,
     return triples
 
 
+def _rank_single_aligns(candidates):
+    """
+    Rank a list of (label, align_dict) by AS → ΔAS → NM → scaffold_resolved.
+
+    candidates : list of (label, align_dict) — only mapped alignments.
+    Returns (label, align_dict, tie_status) or (None, None, 'ambiguous'/'N/A').
+
+    tie_status values: 'unique', 'AS_resolved', 'dAS_resolved', 'NM_resolved',
+                       'scaffold_resolved', 'ambiguous', 'N/A' (no mapped aligns).
+    """
+    mapped = [(lbl, a) for lbl, a in candidates
+              if a.get("Chr", "*") not in ("*", "0")]
+    if not mapped:
+        return None, None, "N/A"
+
+    # Unique locus check
+    unique_loci = {(a["Chr"], a["Pos"]) for _, a in mapped}
+    if len(unique_loci) == 1:
+        return mapped[0][0], mapped[0][1], "unique"
+
+    all_as = [a.get("AS", -1) for _, a in mapped]
+
+    # Step 1: AS — keep highest
+    top_as = max(all_as)
+    top = [(lbl, a) for lbl, a in mapped if a.get("AS", -1) == top_as]
+    top_loci = {(a["Chr"], a["Pos"]) for _, a in top}
+    if len(top_loci) == 1:
+        return top[0][0], top[0][1], "AS_resolved"
+
+    # Step 2: ΔAS — for each surviving alignment, compute AS_this minus
+    # the best AS of any OTHER alignment in the full mapped pool.
+    def _das(a):
+        other = max(
+            (x.get("AS", -1) for _, x in mapped
+             if (x["Chr"], x["Pos"]) != (a["Chr"], a["Pos"])),
+            default=None,
+        )
+        return a.get("AS", -1) - other if other is not None else a.get("AS", -1)
+
+    top_das = max(_das(a) for _, a in top)
+    top = [(lbl, a) for lbl, a in top if _das(a) == top_das]
+    top_loci = {(a["Chr"], a["Pos"]) for _, a in top}
+    if len(top_loci) == 1:
+        return top[0][0], top[0][1], "dAS_resolved"
+
+    # Step 3: NM — keep lowest
+    min_nm = min(a.get("NM", 999) for _, a in top)
+    top = [(lbl, a) for lbl, a in top if a.get("NM", 999) == min_nm]
+    top_loci = {(a["Chr"], a["Pos"]) for _, a in top}
+    if len(top_loci) == 1:
+        return top[0][0], top[0][1], "NM_resolved"
+
+    # Step 4: scaffold_resolved — prefer placed chromosome over scaffold
+    placed = [(lbl, a) for lbl, a in top if is_placed_chromosome(a["Chr"])]
+    placed_loci = {(a["Chr"], a["Pos"]) for _, a in placed}
+    if placed and len(placed_loci) == 1:
+        return placed[0][0], placed[0][1], "scaffold_resolved"
+
+    return None, None, "ambiguous"
+
+
+def best_topseq_rescue(ts_aligns):
+    """
+    Pick the best TopSeq alignment across both alleles when no valid triple exists.
+
+    Uses _rank_single_aligns (AS → ΔAS → NM → scaffold_resolved → ambiguous).
+    Returns (allele, align_dict, tie_status).
+    allele and align_dict are None when no mapped alignment exists or on ambiguous.
+    """
+    candidates = [
+        (allele, a)
+        for allele, aligns in ts_aligns.items()
+        for a in aligns
+        if a.get("Chr", "*") not in ("*", "0")
+    ]
+    return _rank_single_aligns(candidates)
+
+
+def best_probe_rescue(probe_aligns):
+    """
+    Pick the best probe alignment when TopSeq did not align at all.
+
+    Uses _rank_single_aligns (AS → ΔAS → NM → scaffold_resolved → ambiguous).
+    No strand filtering — without a TopSeq strand anchor, expected strand
+    cannot be determined for TOP/BOT markers.
+    Returns (align_dict, tie_status). align_dict is None on ambiguous.
+    """
+    candidates = [
+        ("probe", pb)
+        for pb in probe_aligns
+        if pb.get("Chr", "*") not in ("*", "0")
+    ]
+    _, align, tie = _rank_single_aligns(candidates)
+    return align, tie
+
+
 def select_best_pair(topseq_aligns, probe_aligns):
     """
     Finds the best (TopGenomicSeq × probe) alignment pair for a single marker.

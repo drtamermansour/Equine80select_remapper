@@ -25,6 +25,8 @@ from remap_manifest import (
     extract_candidates,
     compute_alignment_status,
     build_valid_triples,
+    best_topseq_rescue,
+    best_probe_rescue,
 )
 
 
@@ -919,3 +921,97 @@ def test_build_valid_triples_different_chr_discarded():
                                    probe_seq="ACGT",
                                    topseq_a="ACGT", topseq_b="ACGG")
     assert triples == []
+
+
+# ── best_topseq_rescue ────────────────────────────────────────────────────────
+
+def test_topseq_rescue_single_alignment_unique():
+    """One mapped alignment → unique."""
+    ts_aligns = {"A": [_ts("chr1", 100, as_score=120)], "B": []}
+    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    assert allele == "A"
+    assert ts["Chr"] == "chr1"
+    assert tie == "unique"
+
+
+def test_topseq_rescue_as_resolves():
+    """Two loci, allele A has higher AS → AS_resolved."""
+    ts_aligns = {
+        "A": [_ts("chr1", 100, as_score=150)],
+        "B": [_ts("chr2", 200, as_score=100)],
+    }
+    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    assert ts["Chr"] == "chr1"
+    assert tie == "AS_resolved"
+
+
+def test_topseq_rescue_nm_resolves():
+    """Two loci with same AS, different NM → NM_resolved picks lower NM."""
+    ts_aligns = {
+        "A": [_ts("chr1", 100, as_score=120, nm=0)],
+        "B": [_ts("chr2", 200, as_score=120, nm=2)],
+    }
+    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    assert ts["Chr"] == "chr1"
+    assert tie == "NM_resolved"
+
+
+def test_topseq_rescue_scaffold_resolved():
+    """Placed chr + scaffold tied on all metrics → scaffold_resolved."""
+    ts_aligns = {
+        "A": [_ts("chr1",     100, as_score=120, nm=0)],
+        "B": [_ts("NW_12345", 200, as_score=120, nm=0)],
+    }
+    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    assert ts["Chr"] == "chr1"
+    assert tie == "scaffold_resolved"
+
+
+def test_topseq_rescue_ambiguous():
+    """Two placed chrs with identical metrics → ambiguous."""
+    ts_aligns = {
+        "A": [_ts("chr1", 100, as_score=120, nm=0)],
+        "B": [_ts("chr2", 200, as_score=120, nm=0)],
+    }
+    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    assert allele is None
+    assert ts is None
+    assert tie == "ambiguous"
+
+
+def test_topseq_rescue_no_mapped_alignment():
+    """No mapped TopSeq alignments → returns (None, None, 'N/A')."""
+    ts_aligns = {"A": [], "B": []}
+    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    assert allele is None
+    assert ts is None
+    assert tie == "N/A"
+
+
+# ── best_probe_rescue ─────────────────────────────────────────────────────────
+
+def test_probe_rescue_single_alignment_unique():
+    """One probe alignment → unique."""
+    pb_aligns = [_pb("chr1", 100, as_score=80)]
+    pb, tie = best_probe_rescue(pb_aligns)
+    assert pb["Chr"] == "chr1"
+    assert tie == "unique"
+
+
+def test_probe_rescue_as_resolves():
+    """Two probe positions, different AS → AS_resolved."""
+    pb_aligns = [_pb("chr1", 100, as_score=80), _pb("chr2", 200, as_score=60)]
+    pb, tie = best_probe_rescue(pb_aligns)
+    assert pb["Chr"] == "chr1"
+    assert tie == "AS_resolved"
+
+
+def test_probe_rescue_ambiguous():
+    """Two placed chrs, identical AS and NM → ambiguous."""
+    pb_aligns = [
+        _pb("chr1", 100, as_score=80, nm=0),
+        _pb("chr2", 200, as_score=80, nm=0),
+    ]
+    pb, tie = best_probe_rescue(pb_aligns)
+    assert pb is None
+    assert tie == "ambiguous"
