@@ -435,14 +435,14 @@ def test_write_report_omits_coord_delta_section_when_column_absent(tmp_path):
 import subprocess
 
 
-def test_integration_runs_without_error(tmp_path):
+def test_integration_runs_without_error(tmp_path, results_dir):
     """Smoke test: run the script against real data and check output files exist."""
     result = subprocess.run(
         [
             "python", "scripts/benchmark_compare.py",
             "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
-            "--remapped",   "results_E80selv2_to_equCab3/"
-                            "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv",
+            "--remapped",   os.path.join(results_dir,
+                            "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv"),
             "--assembly",   "equCab3",
             "--output-dir", str(tmp_path),
         ],
@@ -460,14 +460,14 @@ def test_integration_runs_without_error(tmp_path):
     assert any("report" in f for f in files), f"Report missing. Files: {files}"
 
 
-def test_integration_correct_count(tmp_path):
+def test_integration_correct_count(tmp_path, results_dir):
     """Correct marker count should be well above 80,000 for the current run."""
     subprocess.run(
         [
             "python", "scripts/benchmark_compare.py",
             "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
-            "--remapped",   "results_E80selv2_to_equCab3/"
-                            "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv",
+            "--remapped",   os.path.join(results_dir,
+                            "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv"),
             "--assembly",   "equCab3",
             "--output-dir", str(tmp_path),
         ],
@@ -502,17 +502,18 @@ def test_write_diff_creates_file(tmp_path):
     assert "correct" in content
 
 
-def test_integration_baseline_produces_diff_file(tmp_path):
+def test_integration_baseline_produces_diff_file(tmp_path, results_dir):
     """When --baseline is provided, a _diff.txt file is created alongside the report."""
     run1 = tmp_path / "run1"
     run1.mkdir()
+    remapped_csv = os.path.join(results_dir,
+                   "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv")
     # First run — produces baseline TSV
     subprocess.run(
         [
             "python", "scripts/benchmark_compare.py",
             "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
-            "--remapped",   "results_E80selv2_to_equCab3/"
-                            "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv",
+            "--remapped",   remapped_csv,
             "--assembly",   "equCab3",
             "--output-dir", str(run1),
         ],
@@ -530,8 +531,7 @@ def test_integration_baseline_produces_diff_file(tmp_path):
         [
             "python", "scripts/benchmark_compare.py",
             "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
-            "--remapped",   "results_E80selv2_to_equCab3/"
-                            "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv",
+            "--remapped",   remapped_csv,
             "--assembly",   "equCab3",
             "--output-dir", str(run2),
             "--baseline",   baseline_tsv,
@@ -542,3 +542,83 @@ def test_integration_baseline_produces_diff_file(tmp_path):
     )
     files = os.listdir(run2)
     assert any("_diff.txt" in f for f in files), f"_diff.txt not found in: {files}"
+
+
+# ── load_remapped with new schema (anchor_ + tie_) ────────────────────────────
+
+REMAPPED_CSV_NEW_SCHEMA = textwrap.dedent("""\
+    Name,Chr_equCab3,MapInfo_equCab3,Strand_equCab3,anchor_equCab3,tie_equCab3
+    SNP_auto,1,1000,+,topseq_n_probe,unique
+    SNP_ambiguous,1,8000,+,topseq_n_probe,ambiguous
+    SNP_topseq_only,2,5000,+,topseq_only,unique
+    SNP_unmapped,0,0,N/A,N/A,N/A
+    SNP_scaffold_resolved,3,7000,+,topseq_n_probe,scaffold_resolved
+""")
+
+
+@pytest.fixture
+def remapped_file_new_schema(tmp_path):
+    p = tmp_path / "remapped_new.csv"
+    p.write_text(REMAPPED_CSV_NEW_SCHEMA)
+    return str(p)
+
+
+def test_load_remapped_new_schema_columns(remapped_file_new_schema):
+    """New-schema CSV loads and produces the expected unified columns."""
+    from benchmark_compare import load_remapped
+    df = load_remapped(remapped_file_new_schema, "equCab3")
+    assert set(df.columns) >= {"Name", "remapped_chr", "remapped_pos",
+                                "remapped_strand", "remapped_status"}
+    # anchor_ and tie_ columns must be consumed, not left in the output
+    assert "anchor_equCab3" not in df.columns
+    assert "tie_equCab3" not in df.columns
+
+
+def test_load_remapped_new_schema_status_mapped(remapped_file_new_schema):
+    from benchmark_compare import load_remapped
+    df = load_remapped(remapped_file_new_schema, "equCab3")
+    row = df.loc[df["Name"] == "SNP_auto"].iloc[0]
+    assert row["remapped_status"] == "mapped"
+
+
+def test_load_remapped_new_schema_status_ambiguous(remapped_file_new_schema):
+    from benchmark_compare import load_remapped
+    df = load_remapped(remapped_file_new_schema, "equCab3")
+    row = df.loc[df["Name"] == "SNP_ambiguous"].iloc[0]
+    assert row["remapped_status"] == "ambiguous"
+
+
+def test_load_remapped_new_schema_status_topseq_only(remapped_file_new_schema):
+    from benchmark_compare import load_remapped
+    df = load_remapped(remapped_file_new_schema, "equCab3")
+    row = df.loc[df["Name"] == "SNP_topseq_only"].iloc[0]
+    assert row["remapped_status"] == "topseq_only"
+
+
+def test_load_remapped_new_schema_status_unmapped(remapped_file_new_schema):
+    from benchmark_compare import load_remapped
+    df = load_remapped(remapped_file_new_schema, "equCab3")
+    row = df.loc[df["Name"] == "SNP_unmapped"].iloc[0]
+    assert row["remapped_status"] == "unmapped"
+
+
+def test_load_remapped_new_schema_scaffold_resolved_is_mapped(remapped_file_new_schema):
+    """scaffold_resolved tie value with topseq_n_probe anchor → classified as 'mapped'."""
+    from benchmark_compare import load_remapped
+    df = load_remapped(remapped_file_new_schema, "equCab3")
+    row = df.loc[df["Name"] == "SNP_scaffold_resolved"].iloc[0]
+    assert row["remapped_status"] == "mapped"
+
+
+def test_load_remapped_new_schema_ambiguous_classifies_correctly(
+        remapped_file_new_schema, manifest_main_df):
+    """End-to-end: new-schema ambiguous marker should classify as 'ambiguous'."""
+    from benchmark_compare import load_remapped, compare_all
+    # Add the ambiguous marker to a small manifest
+    extra = pd.DataFrame([{
+        "Name": "SNP_ambiguous", "manifest_chr": "1",
+        "manifest_pos": 8000, "manifest_strand": "+",
+    }])
+    remapped_df = load_remapped(remapped_file_new_schema, "equCab3")
+    result = compare_all(extra, remapped_df)
+    assert result.loc[result["Name"] == "SNP_ambiguous", "result"].iloc[0] == "ambiguous"

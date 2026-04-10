@@ -164,17 +164,35 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
       Name, remapped_chr, remapped_pos, remapped_strand, remapped_status
     and optionally coord_delta (if CoordDelta_{assembly} is present in the CSV).
     Chr is normalised (X aliases → X).
+
+    Supports both the new column schema (anchor_{assembly} + tie_{assembly}) and the
+    old schema (MappingStatus_{assembly}) for backward compatibility.  When both are
+    present the new schema takes precedence.
+
+    New schema → remapped_status mapping:
+      anchor == "topseq_only"              → "topseq_only"
+      tie    == "ambiguous"                → "ambiguous"
+      anchor == "N/A" (unmapped)           → "unmapped"
+      otherwise                            → "mapped"
     """
     col_chr    = f"Chr_{assembly}"
     col_pos    = f"MapInfo_{assembly}"
     col_strand = f"Strand_{assembly}"
-    col_status = f"MappingStatus_{assembly}"
+    col_status = f"MappingStatus_{assembly}"   # old schema
+    col_anchor = f"anchor_{assembly}"          # new schema
+    col_tie    = f"tie_{assembly}"             # new schema
     col_delta  = f"CoordDelta_{assembly}"
 
-    # Validate required columns; detect optional ones
     header = pd.read_csv(path, nrows=0)
-    missing = [c for c in ["Name", col_chr, col_pos, col_strand, col_status]
-               if c not in header.columns]
+
+    has_new_schema = col_anchor in header.columns and col_tie in header.columns
+    has_old_schema = col_status in header.columns
+
+    # Validate required columns
+    required = ["Name", col_chr, col_pos, col_strand]
+    if not has_new_schema and not has_old_schema:
+        required += [col_status]  # will produce a meaningful missing-column error
+    missing = [c for c in required if c not in header.columns]
     if missing:
         raise ValueError(
             f"Remapped CSV {path!r} is missing expected columns: {missing}\n"
@@ -182,7 +200,11 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
         )
     has_delta = col_delta in header.columns
 
-    usecols = ["Name", col_chr, col_pos, col_strand, col_status]
+    usecols = ["Name", col_chr, col_pos, col_strand]
+    if has_new_schema:
+        usecols += [col_anchor, col_tie]
+    elif has_old_schema:
+        usecols.append(col_status)
     if has_delta:
         usecols.append(col_delta)
 
@@ -192,11 +214,31 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
         usecols=usecols,
         low_memory=False,
     )
+
+    # Build a unified remapped_status column
+    if has_new_schema:
+        def _derive_status(row):
+            anchor = row[col_anchor]
+            tie    = row[col_tie]
+            # pandas reads "N/A" as NaN; treat NaN anchor as unmapped
+            anchor_str = "" if pd.isna(anchor) else str(anchor)
+            tie_str    = "" if pd.isna(tie)    else str(tie)
+            if anchor_str == "topseq_only":
+                return "topseq_only"
+            if tie_str == "ambiguous":
+                return "ambiguous"
+            if anchor_str in ("N/A", ""):
+                return "unmapped"
+            return "mapped"
+        df["remapped_status"] = df.apply(_derive_status, axis=1)
+        df = df.drop(columns=[col_anchor, col_tie])
+    else:
+        df = df.rename(columns={col_status: "remapped_status"})
+
     rename_map = {
         col_chr:    "remapped_chr",
         col_pos:    "remapped_pos",
         col_strand: "remapped_strand",
-        col_status: "remapped_status",
     }
     if has_delta:
         rename_map[col_delta] = "coord_delta"
