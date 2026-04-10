@@ -35,13 +35,17 @@
 # For HPC/SLURM, see submit_slurm.sh.
 #
 # Outputs (in output-dir/):
-#   {prefix}_remapped_{assembly}.csv              Full remapped manifest
-#   matchingSNPs_binary_consistantMapping.{assembly}_map  Final map (main output)
-#   {prefix}_remapped_{assembly}.bim              PLINK BIM format
-#   _matchingSNPs_binary_consistantMapping.vcf    VCF (final filtered set)
-#   allele_usage_decision.txt                     Per-SNP allele orientation decisions
-#   QC_Report.txt                                 Marker counts at each filter stage
-#   remap_assessment/                             MAPQ histograms and benchmarks
+#   remapping/
+#     {prefix}_remapped_{assembly}.csv            Full remapped manifest
+#     remapping_Report.txt                        Alignment and resolution summary
+#     ambiguous_markers.csv                       Markers with ambiguous mapping
+#   qc/
+#     matchingSNPs_binary_consistantMapping.{assembly}_map  Final map (main output)
+#     {prefix}_remapped_{assembly}.bim            PLINK BIM format
+#     _matchingSNPs_binary_consistantMapping.vcf  VCF (final filtered set)
+#     allele_usage_decision.txt                   Per-SNP allele orientation decisions
+#     QC_Report.txt                               Marker counts at each filter stage
+#     remap_assessment/                           MAPQ histograms and benchmarks
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -101,9 +105,11 @@ PREFIX="${PREFIX%.csv}"
 
 mkdir -p "$OUTPUT_DIR"
 TEMP_DIR="$OUTPUT_DIR/temp"
-mkdir -p "$TEMP_DIR"
+REMAPPING_DIR="$OUTPUT_DIR/remapping"
+QC_DIR="$OUTPUT_DIR/qc"
+mkdir -p "$TEMP_DIR" "$REMAPPING_DIR" "$QC_DIR"
 
-REMAPPED_CSV="$OUTPUT_DIR/${PREFIX}_remapped_${ASSEMBLY}.csv"
+REMAPPED_CSV="$REMAPPING_DIR/${PREFIX}_remapped_${ASSEMBLY}.csv"
 TOPSEQ_SAM="$TEMP_DIR/temp_topseq.sam"
 PROBE_SAM="$TEMP_DIR/temp_probe.sam"
 
@@ -162,7 +168,7 @@ python "$SCRIPT_DIR/scripts/qc_filter.py" \
     -r  "$REFERENCE" \
     -v  "$VCF_CONTIGS" \
     -a  "$ASSEMBLY" \
-    -o  "$OUTPUT_DIR" \
+    -o  "$QC_DIR" \
     --mapq-topseq "$MAPQ_TOPSEQ" \
     --mapq-probe  "$MAPQ_PROBE" \
     --temp-dir    "$TEMP_DIR" \
@@ -183,6 +189,7 @@ fi
 echo ""
 echo "========================================================"
 echo " Pipeline complete."
-echo " Main output: $OUTPUT_DIR/matchingSNPs_binary_consistantMapping.${ASSEMBLY}_map"
-echo " QC report:   $OUTPUT_DIR/QC_Report.txt"
+echo " Main output: $QC_DIR/matchingSNPs_binary_consistantMapping.${ASSEMBLY}_map"
+echo " QC report:   $QC_DIR/QC_Report.txt"
+echo " Remap CSV:   $REMAPPED_CSV"
 echo "========================================================"

@@ -103,9 +103,9 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 | `CoordSource_equCab3` | `"probe"` or `"cigar"` — which coordinate is in MapInfo |
 | `RefBaseMatch_equCab3` | `"True"` / `"False"` / `"N/A"` — genome ref base at MapInfo matches Ref (strand-normalised)? |
 
-**Note:** The v1 algorithm counts (mapped: 82,482 | ref_resolved: 105 | topseq_only: 1,336 | ambiguous: 146 | unmapped: 250) are stale and will differ under the current algorithm. See `remapping_Report.txt` in the output directory for up-to-date counts.
+**Note:** The v1 algorithm counts (mapped: 82,482 | ref_resolved: 105 | topseq_only: 1,336 | ambiguous: 146 | unmapped: 250) are stale and will differ under the current algorithm. See `remapping/remapping_Report.txt` in the output directory for up-to-date counts.
 
-### Supplementary outputs (same directory as main CSV)
+### Supplementary outputs (in `remapping/` subfolder alongside main CSV)
 
 - `ambiguous_markers.csv`, `scaffold_resolved_markers.csv`, `nm_position_resolved_markers.csv`
 - `remapping_Report.txt` — decision summary
@@ -118,7 +118,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 ## `scripts/qc_filter.py`
 
 **Input:** Remapped CSV + reference FASTA + `vcf_contigs.txt` + SAM files
-**Output:** Filtered VCFs, BIM, final map, `QC_Report.txt`, `remap_assessment/`
+**Output:** Filtered VCFs, BIM, final map, `QC_Report.txt`, `remap_assessment/` — all written to the `qc/` subfolder of `--output-dir`
 
 ### Filter cascade
 
@@ -164,8 +164,8 @@ Standalone accuracy benchmark for EquCab3-native manifests. Compares remapped Ch
 ```bash
 python scripts/benchmark_compare.py \
     --manifest  backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv \
-    --remapped  results_E80selv2_to_equCab3/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv \
-    --assembly  equCab3 --output-dir results_E80selv2_to_equCab3/benchmark/
+    --remapped  results_E80selv2_to_equCab3/remapping/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv \
+    --assembly  equCab3 --output-dir results_E80selv2_to_equCab3/qc/benchmark/
 ```
 
 Strand ground truth: `SourceStrand` column (TOP/PLUS→+, BOT/MINUS→-). **Do not use `RefStrand`** — it encodes probe design convention, not alignment strand.

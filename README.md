@@ -114,20 +114,25 @@ bash submit_slurm.sh -i <manifest.csv> -r <reference.fa> -a <assembly> -o result
 
 ## Outputs
 
-All outputs are written to `--output-dir`:
+Outputs are organised into two subdirectories inside `--output-dir`:
 
-| File | Description |
-|---|---|
-| `{prefix}_remapped_{assembly}.csv` | Full remapped manifest — coordinates + 14 quality columns |
-| `matchingSNPs_binary_consistantMapping.{assembly}_map` | **Main output.** Final high-quality marker map (tab-delimited, no header) |
-| `{prefix}_remapped_{assembly}.bim` | PLINK BIM format (CHR, SNP, 0, POS, REF, ALT) |
-| `_matchingSNPs_binary_consistantMapping.vcf` | Final filtered VCF |
-| `_matchingSNPs.vcf` | VCF after design-conflict filter |
-| `_matchingSNPs_binary.vcf` | VCF after polymorphic-site filter |
-| `allele_usage_decision.txt` | Per-SNP orientation decision (`as_is` / `complement`) |
-| `remapping_Report.txt` | Alignment, pair-filtering, position-resolution, and MAPQ summary |
-| `QC_Report.txt` | Marker counts at each QC filter stage |
-| `remap_assessment/` | MAPQ histograms and known-assembly benchmarks |
+```
+output-dir/
+├── temp/                                        ← intermediate FASTA/SAM files (removed after pipeline)
+├── remapping/                                   ← remap_manifest.py outputs
+│   ├── {prefix}_remapped_{assembly}.csv         Full remapped manifest — coordinates + quality columns
+│   ├── remapping_Report.txt                     Alignment, pair-filtering, and position-resolution summary
+│   └── ambiguous_markers.csv                    Markers with ambiguous mapping (Chr=0)
+└── qc/                                          ← qc_filter.py outputs
+    ├── matchingSNPs_binary_consistantMapping.{assembly}_map   Main output (final marker map)
+    ├── {prefix}_remapped_{assembly}.bim          PLINK BIM format (CHR, SNP, 0, POS, REF, ALT)
+    ├── _matchingSNPs_binary_consistantMapping.vcf Final filtered VCF
+    ├── _matchingSNPs.vcf                         VCF after design-conflict filter
+    ├── _matchingSNPs_binary.vcf                  VCF after polymorphic-site filter
+    ├── allele_usage_decision.txt                 Per-SNP orientation decision (as_is / complement)
+    ├── QC_Report.txt                             Marker counts at each QC filter stage
+    └── remap_assessment/                         MAPQ histograms and known-assembly benchmarks
+```
 
 ### Remapped CSV Quality Columns
 
@@ -230,7 +235,7 @@ pytest tests/ -v
 
 Expected: **86 tests** in `tests/test_remap_manifest.py` + **30 tests** in `tests/test_qc_filter.py` + **46 tests** in `tests/test_benchmark_compare.py` (~7 minutes total including integration tests).
 
-The two integration tests in `test_benchmark_compare.py` require real data files in `backup_original/` and `results_E80selv2_to_equCab3/`.
+The two integration tests in `test_benchmark_compare.py` require real data files in `backup_original/` and `results_E80selv2_to_equCab3/remapping/`.
 
 ---
 
@@ -241,9 +246,9 @@ For assemblies where the true coordinates are known (e.g., EquCab3-native manife
 ```bash
 python scripts/benchmark_compare.py \
     --manifest  backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv \
-    --remapped  results_E80selv2_to_equCab3/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv \
+    --remapped  results_E80selv2_to_equCab3/remapping/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv \
     --assembly  equCab3 \
-    --output-dir results_E80selv2_to_equCab3/benchmark/
+    --output-dir results_E80selv2_to_equCab3/qc/benchmark/
 ```
 
 To compare probe-derived, CIGAR-derived, and final coordinates in a three-way accuracy table:
@@ -251,7 +256,7 @@ To compare probe-derived, CIGAR-derived, and final coordinates in a three-way ac
 ```bash
 python scripts/benchmark_cigar_vs_probe.py \
     --manifest  backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv \
-    --remapped  results_E80selv2_to_equCab3/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv \
+    --remapped  results_E80selv2_to_equCab3/remapping/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv \
     --assembly  equCab3
 ```
 
