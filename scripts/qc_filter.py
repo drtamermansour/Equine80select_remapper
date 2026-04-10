@@ -242,8 +242,10 @@ def build_final_map(df_final, decisions, assembly, map_path):
 
         # Genomic alleles on + strand
         strand = row[col_strand]
-        gref = strand_normalize(row[col_ref], strand)
-        galt = strand_normalize(row[col_alt], strand)
+        raw_ref = row[col_ref] if pd.notna(row[col_ref]) else ""
+        raw_alt = row[col_alt] if pd.notna(row[col_alt]) else ""
+        gref = strand_normalize(raw_ref, strand)
+        galt = strand_normalize(raw_alt, strand)
 
         # Complement of SNP alleles (for 'complement' decisions)
         snp_a_comp = complement(snp_a)
