@@ -69,15 +69,13 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 1. Parse `[Assay]` section of manifest.
 2. Build `temp_probes.fasta` (50 bp AlleleA probes) and `temp_topseq.fasta` (two sequences per marker: PREFIX+AlleleA+SUFFIX and PREFIX+AlleleB+SUFFIX).
 3. Run `minimap2 -ax sr -N 5` on both. **Both primary and secondary alignments are retained.**
-4. For each marker, enumerate all valid (TopSeq_allele × TopSeq_alignment × probe_alignment) triples. A triple is valid if: TopSeq chr == probe chr AND overlap > 0. No strand constraint — probes for bottom-strand markers align opposite to TopGenomicSeq and are still valid.
-5. Rank triples by `min(TopSeq_MAPQ, probe_MAPQ)`, then by TopSeq AS score, then by combined MAPQ. Resolve:
-   - 1 unique chr:pos → **mapped**
-   - Tied, one on placed chr + rest on scaffolds → **scaffold_resolved** (accept placed chr)
-   - 2+ placed-chr positions tied, NM scores break tie → **nm_position_resolved** (accept lower NM)
-   - 2+ placed-chr positions tied, NM scores also tied → **ambiguous** (Chr=0)
-   - No valid triples but TopSeq aligned → **topseq_only** rescue (see below)
-   - No valid triples and no TopSeq alignment → **unmapped** (Chr=0)
-6. Determine Ref/Alt by comparing NM scores of allele A vs allele B at the winning position. NM tie → ambiguous.
+4. For each marker, enumerate all valid (TopSeq_allele × TopSeq_align × probe_align) triples via `build_valid_triples`. A triple is valid if:
+   - TopSeq chr == probe chr
+   - `compute_probe_strand_agreement` returns `"True"` (strand check is a hard filter; `"N/A"` is treated as valid)
+   - Among strand-valid probes on the same chromosome, only the highest-overlap one is kept per ts_align.
+   - overlap > 0.
+5. Rank triples by AS_sum (ts.AS + pb.AS) → ΔAS_sum → NM_sum → CoordDelta → scaffold_resolved → ambiguous. MAPQ is no longer used for ranking (reported as diagnostic only). If no valid triples exist, fall through to `best_topseq_rescue` (anchor=topseq_only) then `best_probe_rescue` (anchor=probe_only).
+6. Determine Ref/Alt via `determine_ref_alt_v2`: genome lookup (`resolve_ref_from_genome`, now strand-aware) is the primary method for SNPs; NM comparison runs in parallel. For indels, NM comparison determines Ref/Alt; deletion Ref is validated against the genome (replaces `check_deletion_ref_match` in qc_filter.py). Agreement reported in `RefAltMethodAgreement_{assembly}`.
 7. Calculate variant position via `get_probe_coordinate()` using the **probe's own alignment strand** (NOT the TopSeq strand — mixing these caused a ±51 bp bug that is now fixed).
 8. **CIGAR cross-validation:** compute `Coord_TopSeqCIGAR` by walking the TopSeq CIGAR to the SNP position. `CoordDelta = |probe_coord − CIGAR_coord|`. If `CoordDelta ≥ 2`, use CIGAR coord as `MapInfo` (`CoordSource = "cigar"`); otherwise use probe coord (`CoordSource = "probe"`). Benchmark accuracy: probe 98.0%, CIGAR 98.6%, final 98.7%.
 
@@ -91,8 +89,11 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 | `MapInfo_equCab3` | Final 1-based position (probe-derived or CIGAR-derived; see CoordSource) |
 | `Strand_equCab3` | `+`, `-`, or `N/A` (TopGenomicSeq alignment strand) |
 | `Ref_equCab3` / `Alt_equCab3` | Alleles in alignment strand (NOT strand-normalised; qc_filter.py normalises) |
-| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=NaN for topseq_only markers (no probe alignment) |
-| `MappingStatus_equCab3` | `mapped`, `unmapped`, `ambiguous`, `scaffold_resolved`, `ref_resolved`, `nm_position_resolved`, `topseq_only` |
+| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=NaN for topseq_only markers (no probe alignment); populated normally for probe_only |
+| `AlignmentStatus_equCab3` | Raw alignment census: gp1–gp5 or unmapped (computed before filtering) |
+| `anchor_equCab3` | Which source was used for the coordinate: topseq_n_probe / topseq_only / probe_only / N/A |
+| `tie_equCab3` | How the winning locus was selected: unique / AS_resolved / dAS_resolved / NM_resolved / CoordDelta_resolved / scaffold_resolved / ambiguous / N/A |
+| `RefAltMethodAgreement_equCab3` | Agreement between genome-lookup and NM-based Ref/Alt (see docs/pipeline_decision_tree.md §4 for value definitions) |
 | `DeltaScore_TopGenomicSeq` | AS gap between best and 2nd-best TopSeq alignments; −1 if fewer than 2 |
 | `QueryCov_TopGenomicSeq` | Fraction of TopSeq query in M/=/X aligned ops; 0.0 for unmapped |
 | `SoftClipFrac_TopGenomicSeq` | Fraction of TopSeq query bases soft-clipped; 0.0 for unmapped |
@@ -123,7 +124,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 
 1. `Strand_{assembly} == 'N/A'` → unmapped, remove
 2. `MAPQ_TopGenomicSeq < --mapq-topseq` → low-confidence, remove
-3. *(optional)* `CoordDelta > --coord-delta` OR `MappingStatus == topseq_only` → remove; disabled by default (`--coord-delta -1`)
+3. *(optional)* `CoordDelta > --coord-delta` OR `anchor_{assembly} == "topseq_only"` → remove; disabled by default (`--coord-delta -1`)
 4. *(optional)* `StrandAgreementAsExpected == False` → remove; disabled by default (`--require-strand-agreement`)
 5. Design conflict:
    - **SNPs**: strand-normalised Ref ≠ single-base genome Ref from bcftools → remove
@@ -242,6 +243,10 @@ chr  pos  snpID  SNP_alleles  genomic_alleles  SNP_ref_allele  genomic_ref_allel
 7. **Use `--resume` during development.** Existing SAM files live in `results_E80selv2_to_equCab3/temp/`. Pass `--resume --temp-dir results_E80selv2_to_equCab3/temp` to skip the multi-hour minimap2 alignment step when iterating on parsing or coordinate logic.
 
 8. **CoordDelta on minus-strand indels may be inflated** by `allele_len − 1`. This is expected behaviour; the CIGAR and probe coordinates shift differently for deletions on the minus strand.
+
+9. **`resolve_ref_from_genome` requires `strand`.** The function now complements allele characters before comparing against the forward-strand genome base when `strand == "-"`. All call sites must pass the alignment strand. Omitting it caused silent `None` returns for minus-strand NM ties.
+
+10. **CoordDelta filter uses `anchor_{assembly}`, not `MappingStatus_{assembly}`.** `qc_filter.py --coord-delta` now reads `anchor_{assembly} == "topseq_only"` to identify markers to exclude. Old CSVs without `anchor_{assembly}` will skip the filter with a warning.
 
 ---
 

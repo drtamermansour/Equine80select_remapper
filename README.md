@@ -99,7 +99,7 @@ bash run_pipeline.sh \
 | `-t / --threads` | `4` | Threads for minimap2 |
 | `--mapq-topseq` | `30` | Minimum MAPQ for TopGenomicSeq alignments |
 | `--mapq-probe` | `0` (disabled) | Minimum MAPQ for probe alignments |
-| `--coord-delta` | `-1` (disabled) | Remove markers where `\|probe_coord − CIGAR_coord\| > N` and all `topseq_only` markers |
+| `--coord-delta` | `-1` (disabled) | Remove markers where `\|probe_coord − CIGAR_coord\| > N` and all markers where `anchor_{assembly} == "topseq_only"` |
 | `--exclude-indels` | off | Remove indel markers from all outputs (VCF, BIM, map file) |
 | `--keep-temp` | off | Retain intermediate FASTA/SAM files |
 | `--resume` | off | Skip minimap2 if SAM files already exist |
@@ -139,8 +139,7 @@ The remapped CSV includes 14 new columns beyond the manifest fields:
 | `MapInfo_{assembly}` | **Final 1-based position** (probe-derived or CIGAR-derived; see CoordSource) |
 | `Strand_{assembly}` | TopGenomicSeq alignment strand (`+`, `−`, `N/A`) |
 | `Ref_{assembly}` / `Alt_{assembly}` | Alleles in alignment strand (strand-normalised by qc_filter.py) |
-| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=NaN for `topseq_only` markers (no probe alignment) |
-| `MappingStatus_{assembly}` | `mapped`, `ref_resolved`, `nm_position_resolved`, `scaffold_resolved`, `topseq_only`, `unmapped`, `ambiguous` |
+| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=NaN for `topseq_only` markers (no probe alignment); populated normally for `probe_only` |
 | `DeltaScore_TopGenomicSeq` | AS gap between best and 2nd-best TopSeq alignments; −1 = uniquely placed |
 | `QueryCov_TopGenomicSeq` | Fraction of TopSeq query in aligned (M/=/X) ops |
 | `SoftClipFrac_TopGenomicSeq` | Fraction of TopSeq query that is soft-clipped |
@@ -149,6 +148,28 @@ The remapped CSV includes 14 new columns beyond the manifest fields:
 | `CoordDelta_{assembly}` | `\|CoordProbe − Coord_TopSeqCIGAR\|`; −1 if CIGAR unavailable |
 | `CoordSource_{assembly}` | `"probe"` or `"cigar"` — which coordinate is in MapInfo |
 | `RefBaseMatch_{assembly}` | Does genome ref base at MapInfo match Ref after strand normalisation? |
+
+### New columns (v2 algorithm)
+
+| Column | Meaning |
+|---|---|
+| `AlignmentStatus_{assembly}` | Diagnostic census of which alignment sources had hits: `gp1` (both TopSeq alleles + probe), `gp2` (one TopSeq + probe), `gp3` (both TopSeq, no probe), `gp4` (one TopSeq, no probe), `gp5` (probe only), `unmapped`. Computed before any filtering. |
+| `anchor_{assembly}` | Which source(s) determined the final coordinate: `topseq_n_probe`, `topseq_only`, `probe_only`, or `N/A` (unmapped/ambiguous). |
+| `tie_{assembly}` | How a multi-locus tie was resolved: `unique`, `AS_resolved`, `dAS_resolved`, `NM_resolved`, `CoordDelta_resolved`, `scaffold_resolved`, `ambiguous`, or `N/A`. |
+| `RefAltMethodAgreement_{assembly}` | For SNPs: relationship between genome-lookup and NM-based Ref/Alt calls. For indels: whether deletion Ref was confirmed by a genome fetch. See values below. |
+
+**`RefAltMethodAgreement` values for SNPs:**
+
+| Value | Meaning |
+|---|---|
+| `NM_match` | Genome lookup and NM comparison both succeeded and agree |
+| `NM_unmatch` | Both succeeded but disagree — genome result used (flag for QC) |
+| `NM_tied` | Genome succeeded; NM was tied — genome result used |
+| `NM_N/A` | Genome succeeded; NM not applicable (probe_only marker) |
+| `NM_only` | Genome lookup failed; NM result used |
+| `ambiguous` | Both methods failed — Chr=0 |
+
+**What is NM?** `NM` is the `NM:i:<n>` edit-distance tag written by minimap2 into each SAM alignment record. It counts mismatches and gap opens between the aligned sequence and the reference — it is **not** derived from CIGAR walking. CIGAR walking in this pipeline is used only for coordinate computation (`parse_cigar_to_ref_pos`, `get_probe_coordinate`). `NM_match`/`NM_unmatch` markers indicate that the genome and NM methods gave the same/different Ref allele assignment; `NM_unmatch` markers are worth inspecting for nearby variants.
 
 ### Map File Format
 
@@ -173,7 +194,7 @@ Filters applied sequentially by `qc_filter.py`; `QC_Report.txt` records counts a
 
 1. **Unmapped** — `Strand == N/A`
 2. **MAPQ** — `MAPQ_TopGenomicSeq < --mapq-topseq`
-3. **CoordDelta** *(optional)* — `CoordDelta > --coord-delta` or `MappingStatus == topseq_only`; disabled by default (`--coord-delta -1`)
+3. **CoordDelta** *(optional)* — `CoordDelta > --coord-delta` or `anchor_{assembly} == "topseq_only"`; disabled by default (`--coord-delta -1`)
 4. **Strand agreement** *(optional)* — `StrandAgreementAsExpected == False`; disabled by default (`--require-strand-agreement`)
 5. **Design conflict** — SNPs: strand-normalised Ref ≠ genome ref base at MapInfo; deletions: pysam fetch of ref sequence at MapInfo ≠ gref; insertions: always pass
 6. **Exclude indels** *(optional)* — remove all indel markers; disabled by default (`--exclude-indels`)
