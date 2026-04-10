@@ -695,117 +695,6 @@ def rank_and_resolve(triples, all_ts_aligns, all_pb_aligns, info, assay_type):
     return ("ambiguous", competing)
 
 
-def select_best_pair(topseq_aligns, probe_aligns):
-    """
-    Finds the best (TopGenomicSeq × probe) alignment pair for a single marker.
-
-    Both TopGenomicSeq and probe may have multiple alignments (primary + secondary).
-    A triple (topseq_allele, topseq_align, probe_align) is valid only when:
-      1. chromosome matches
-      2. overlap between the two alignment windows > 0
-
-    No strand constraint is applied: probes designed for the bottom strand align
-    to the opposite strand from TopGenomicSeq and are still valid.  The output
-    marker strand is always taken from the TopGenomicSeq alignment; the probe
-    strand is used only internally by get_probe_coordinate().
-
-    Valid triples are ranked by min(topseq_MAPQ, probe_MAPQ) — weakest-link
-    scoring — then by TopSeq AS score, then by combined MAPQ as a tertiary sort.
-
-    Among triples tied at the top score, unique loci (TopSeq chr:pos) are
-    extracted and resolved:
-      • 1 unique locus            → ('winner', allele, topseq_align, probe_align)
-      • placed chrom + scaffolds  → ('scaffold_resolved', allele, topseq_align,
-                                      probe_align, competing_rows)
-      • 2+ placed-chrom loci      → ('ambiguous', competing_rows)
-      • no valid triples          → None  (unmapped)
-
-    topseq_aligns : {'A': [align_dict, ...], 'B': [align_dict, ...]}
-    probe_aligns  : [align_dict, ...]
-    """
-    valid = []
-    for allele, ts_list in topseq_aligns.items():
-        for ts in ts_list:
-            for pb in probe_aligns:
-                if ts["Chr"] != pb["Chr"]:
-                    continue
-                if calculate_overlap(ts["Pos"], ts["End"], pb["Pos"], pb["End"]) <= 0:
-                    continue
-                min_mapq = min(ts["MAPQ"], pb["MAPQ"])
-                ts_as    = ts.get("AS", -1)
-                sum_mapq = ts["MAPQ"] + pb["MAPQ"]
-                valid.append((min_mapq, ts_as, sum_mapq, allele, ts, pb))
-
-    if not valid:
-        return None
-
-    valid.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
-    top_min_q, top_ts_as, top_sum_q = valid[0][0], valid[0][1], valid[0][2]
-    top_pairs = [
-        (allele, ts, pb)
-        for min_q, t_as, sum_q, allele, ts, pb in valid
-        if min_q == top_min_q and t_as == top_ts_as and sum_q == top_sum_q
-    ]
-
-    unique_loci = {(ts["Chr"], ts["Pos"]) for _, ts, _ in top_pairs}
-
-    if len(unique_loci) == 1:
-        best = top_pairs[0]
-        return ("winner", best[0], best[1], best[2])
-
-    placed    = [(a, ts, pb) for a, ts, pb in top_pairs if     is_placed_chromosome(ts["Chr"])]
-    scaffolds = [(a, ts, pb) for a, ts, pb in top_pairs if not is_placed_chromosome(ts["Chr"])]
-
-    unique_placed_loci = {(ts["Chr"], ts["Pos"]) for _, ts, _ in placed}
-
-    if placed and scaffolds and len(unique_placed_loci) == 1:
-        competing = _make_competing_rows(top_pairs, "scaffold_resolved")
-        best = placed[0]
-        return ("scaffold_resolved", best[0], best[1], best[2], competing)
-
-    # NM tiebreaker: among placed-chromosome loci, pick the one with the lowest
-    # per-locus minimum NM.  Only applies when at least one placed locus exists.
-    if placed:
-        locus_min_nm = {}
-        for a, ts, pb in placed:
-            locus = (ts["Chr"], ts["Pos"])
-            if locus not in locus_min_nm or ts["NM"] < locus_min_nm[locus]:
-                locus_min_nm[locus] = ts["NM"]
-        best_nm = min(locus_min_nm.values())
-        nm_winning_loci = {loc for loc, nm in locus_min_nm.items() if nm == best_nm}
-        if len(nm_winning_loci) == 1:
-            winning_chr, winning_pos = next(iter(nm_winning_loci))
-            nm_pairs = [(a, ts, pb) for a, ts, pb in top_pairs
-                        if ts["Chr"] == winning_chr and ts["Pos"] == winning_pos]
-            competing = _make_competing_rows(top_pairs, "position_tie")
-            best = nm_pairs[0]
-            return ("nm_position_resolved", best[0], best[1], best[2], competing)
-
-    competing = _make_competing_rows(top_pairs, "position_tie")
-    return ("ambiguous", competing)
-
-
-# ── TOPSEQ-ONLY RESCUE ───────────────────────────────────────────────────────
-
-def _best_topseq_for_rescue(ts_aligns):
-    """
-    Pick the best mapped TopSeq alignment across both alleles for CIGAR-only rescue.
-    Used when no valid (TopSeq × probe) triple exists but TopSeq itself aligned.
-
-    Returns (allele, alignment_dict) for the highest-MAPQ then highest-AS alignment,
-    or (None, None) if no mapped alignment exists.
-    """
-    candidates = []
-    for allele, aligns in ts_aligns.items():
-        for a in aligns:
-            if a.get("Chr", "*") not in ("*", "0"):
-                candidates.append((allele, a))
-    if not candidates:
-        return None, None
-    candidates.sort(key=lambda x: (x[1]["MAPQ"], x[1].get("AS", -1)), reverse=True)
-    return candidates[0]
-
-
 # ── REF/ALT DETERMINATION ────────────────────────────────────────────────────
 
 def determine_ref_alt(winning_allele, winning_ts, topseq_aligns, candidates_info):
@@ -1242,226 +1131,212 @@ def run_remapping(args):
             pb_aligns = probe_candidates.get(name, [])
             info      = candidates_info.get(name)
 
+            # Alignment census (diagnostic — computed before any filtering)
+            align_status = compute_alignment_status(ts_aligns, pb_aligns)
+
             # ΔScore: AS_best − AS_2nd across all TopSeq alignments.
-            # -1 = no alignments with valid AS, or only one alignment (uniquely placed).
-            # 0  = two alignments with identical AS (ambiguous locus).
-            # >0 = margin of superiority of best alignment over second-best.
             all_as = sorted(
-                [a["AS"] for aligns in ts_aligns.values() for a in aligns if a.get("AS", -1) >= 0],
+                [a["AS"] for aligns in ts_aligns.values()
+                 for a in aligns if a.get("AS", -1) >= 0],
                 reverse=True,
             )
             delta_score = (all_as[0] - all_as[1]) if len(all_as) >= 2 else -1
 
-            has_a = bool(ts_aligns.get("A"))
-            has_b = bool(ts_aligns.get("B"))
-            if has_a and has_b:
-                counters.topseq_both += 1
-            elif has_a or has_b:
-                counters.topseq_one += 1
-            else:
-                counters.topseq_neither += 1
+            # Update alignment group counters
+            if align_status == "gp1":   counters.align_gp1 += 1
+            elif align_status == "gp2": counters.align_gp2 += 1
+            elif align_status == "gp3": counters.align_gp3 += 1
+            elif align_status == "gp4": counters.align_gp4 += 1
+            elif align_status == "gp5": counters.align_gp5 += 1
 
-            if not info or (not has_a and not has_b):
+            if not info or align_status == "unmapped":
                 _append_unmapped_cols("N/A", "N/A")
+                new_cols[col_align_status][-1] = align_status
                 counters.final_unmapped += 1
                 continue
 
-            result = select_best_pair(ts_aligns, pb_aligns)
+            ilmn_strand = str(row.get("IlmnStrand", "")).strip().upper()
+            probe_seq   = str(row.get("AlleleA_ProbeSeq", ""))
+            topseq_a    = info.get("TopSeqA", "")
+            topseq_b    = info.get("TopSeqB", "")
+            assay       = assay_types.get(name, "II")
 
-            if result is None:
-                counters.no_valid_pair += 1
-                # Rescue: TopSeq aligned but no valid (TopSeq × probe) triple.
-                # Derive coordinate purely from TopGenomicSeq CIGAR walk.
-                best_allele, best_ts = _best_topseq_for_rescue(ts_aligns)
-                if best_ts is None:
-                    _append_unmapped_cols("N/A", "N/A")
-                    counters.final_unmapped += 1
-                    continue
-                target_idx = info["PreLen"] if best_ts["Strand"] == "+" else info["PostLen"]
-                cigar_coord, cigar_in_sc = parse_cigar_to_ref_pos(
-                    best_ts["Pos"], best_ts["Cigar"], target_idx
-                )
-                if cigar_in_sc or cigar_coord == 0:
-                    # TopSeq aligned but SNP target index falls in soft-clipped region;
-                    # no reference coordinate can be derived from this alignment.
-                    _append_unmapped_cols("N/A", "N/A")
-                    counters.topseq_rescue_failed_softclip += 1
-                    counters.final_unmapped += 1
-                    continue
-                ref_alt = determine_ref_alt(best_allele, best_ts, ts_aligns, info)
-                if ref_alt is None:
-                    ref_alt = resolve_ref_from_genome(
-                        fasta, best_ts["Chr"], cigar_coord, info["AlleleA"], info["AlleleB"], best_ts["Strand"]
-                    )
-                if ref_alt is None:
-                    _append_unmapped_cols("N/A", "N/A")
-                    counters.topseq_rescue_failed_refalt += 1
-                    counters.final_unmapped += 1
-                    continue
-                ref_char, alt_char = ref_alt
-                if len(ref_char) == 1 and len(alt_char) == 1:
-                    try:
-                        genome_base = fasta.fetch(
-                            best_ts["Chr"], cigar_coord - 1, cigar_coord
-                        ).upper()
-                    except (ValueError, KeyError):
-                        genome_base = None
-                    ref_char_fwd = (
-                        _COMP.get(ref_char, ref_char)
-                        if best_ts["Strand"] == "-" else ref_char
-                    )
-                    if genome_base is None or genome_base == "":
-                        ref_base_match_str = "False"
-                        counters.ref_base_mismatch += 1
-                    elif genome_base == ref_char_fwd:
-                        ref_base_match_str = "True"
-                    else:
-                        ref_base_match_str = "False"
-                        counters.ref_base_mismatch += 1
-                else:
-                    ref_base_match_str = "N/A"
-                new_cols[col_chr].append(best_ts["Chr"])
-                new_cols[col_pos].append(cigar_coord)
-                new_cols[col_strand].append(best_ts["Strand"])
-                new_cols[col_ref].append(ref_char)
-                new_cols[col_alt].append(alt_char)
-                new_cols[col_mapq_ts].append(best_ts["MAPQ"])
-                new_cols[col_mapq_pb].append(float('nan'))  # no probe alignment
-                new_cols[col_delta].append(delta_score)
-                new_cols[col_qcov].append(compute_qcov(best_ts["Cigar"]))
-                new_cols[col_scfrac].append(compute_soft_clip_frac(best_ts["Cigar"]))
-                new_cols[col_cigar_coord].append(cigar_coord)
-                new_cols[col_probe_coord].append(0)    # no probe alignment for this marker
-                new_cols[col_coord_delta].append(-1)   # no probe coord to compare
-                new_cols[col_coord_source].append("cigar")
-                new_cols[col_ref_match].append(ref_base_match_str)
-                new_cols[col_probe_strand].append("N/A")   # no probe alignment
-                new_cols[col_strand_agree].append("N/A")   # no probe alignment
-                new_cols[col_align_status].append("topseq_only")
-                new_cols[col_anchor].append("N/A")
-                new_cols[col_tie].append("N/A")
-                new_cols[col_refalt_agree].append("N/A")
-                counters.final_topseq_only += 1
-                continue
+            # ── Locus anchoring ──────────────────────────────────────────────
+            triples = build_valid_triples(ts_aligns, pb_aligns,
+                                           ilmn_strand, probe_seq,
+                                           topseq_a, topseq_b)
 
-            counters.valid_pair_found += 1
+            winning_allele = winning_ts = winning_pb = None
+            anchor = tie_status = None
 
-            if result[0] == "ambiguous":
-                _, competing = result
-                ambiguous_rows.extend({"Name": name, **r} for r in competing)
-                _append_unmapped_cols("N/A", "ambiguous")
-                counters.position_ambiguous += 1
-                counters.final_ambiguous    += 1
-                continue
-
-            if result[0] == "scaffold_resolved":
-                _, winning_allele, winning_ts, winning_pb, competing = result
-                scaffold_rows.extend({"Name": name, **r} for r in competing)
-                counters.scaffold_resolved += 1
-            elif result[0] == "nm_position_resolved":
-                _, winning_allele, winning_ts, winning_pb, competing = result
-                nm_pos_rows.extend({"Name": name, **r} for r in competing)
-                counters.nm_position_resolved += 1
-            else:  # 'winner'
-                _, winning_allele, winning_ts, winning_pb = result
-                counters.unique_position += 1
-
-            ref_alt = determine_ref_alt(winning_allele, winning_ts, ts_aligns, info)
-
-            assay = assay_types.get(name, "II")
-            c_pos = get_probe_coordinate(
-                winning_pb["Pos"], winning_pb["Cigar"], winning_pb["Strand"], assay
-            )
-
-            if ref_alt is None:
-                # Attempt to break NM tie by reference genome lookup at the variant position
-                ref_alt = resolve_ref_from_genome(
-                    fasta, winning_ts["Chr"], c_pos, info["AlleleA"], info["AlleleB"], winning_ts["Strand"]
-                )
-                if ref_alt is None:
-                    # True triallelic — record both allele alignments for transparency
-                    # (winning_pb reused for competing pair: no probe alignment for other allele)
-                    other_allele = "B" if winning_allele == "A" else "A"
-                    other_at_chr = [a for a in ts_aligns.get(other_allele, [])
-                                    if a["Chr"] == winning_ts["Chr"]]
-                    pairs = [(winning_allele, winning_ts, winning_pb)]
-                    if other_at_chr:
-                        other_ts = min(other_at_chr, key=lambda a: a["NM"])
-                        pairs.append((other_allele, other_ts, winning_pb))
-                    ambiguous_rows.extend({"Name": name, **r}
-                                          for r in _make_competing_rows(pairs, "NM_tie"))
+            if triples:
+                counters.valid_pair_found += 1
+                result = rank_and_resolve(triples, ts_aligns, pb_aligns,
+                                           info, assay)
+                if result[0] == "ambiguous":
+                    _, competing = result
+                    ambiguous_rows.extend({"Name": name, **r} for r in competing)
                     _append_unmapped_cols("N/A", "ambiguous")
-                    counters.ref_alt_nm_tie  += 1
-                    counters.final_ambiguous += 1
+                    new_cols[col_align_status][-1] = align_status
+                    counters.position_ambiguous += 1
+                    counters.final_ambiguous    += 1
                     continue
-                counters.ref_alt_ref_resolved += 1
-                status = "ref_resolved"
-            else:
-                counters.ref_alt_clear += 1
-                if len(ref_alt[0]) > len(ref_alt[1]) and winning_ts["Strand"] == "-":
-                    c_pos -= len(ref_alt[0]) - len(ref_alt[1])
-                if result[0] in ("scaffold_resolved", "nm_position_resolved"):
-                    status = result[0]
+
+                tie_status     = result[0]
+                winning_allele = result[1]
+                winning_ts     = result[2]
+                winning_pb     = result[3]
+                anchor         = "topseq_n_probe"
+
+                if tie_status == "scaffold_resolved":
+                    scaffold_rows.extend({"Name": name, **r} for r in result[4])
+                    counters.scaffold_resolved += 1
+                elif tie_status in ("AS_resolved", "dAS_resolved",
+                                    "NM_resolved", "CoordDelta_resolved"):
+                    nm_pos_rows.extend({"Name": name, **r} for r in result[4])
+                    if tie_status == "NM_resolved":
+                        counters.nm_position_resolved += 1
                 else:
-                    status = "mapped"
+                    counters.unique_position += 1
 
-            ref_char, alt_char = ref_alt
+            else:
+                # No valid triples — try TopSeq rescue
+                counters.no_valid_pair += 1
+                best_allele, best_ts, ts_tie = best_topseq_rescue(ts_aligns)
 
-            # Validate ref allele against genome reference base at the variant position.
-            # For multi-character alleles (indels), skip validation — a single-base lookup
-            # is not meaningful.
-            #
-            # ref_char is in the alignment strand (TopGenomicSeq orientation).  To compare
-            # it against the forward-strand genome base we strand-normalise it first:
-            # complement on minus-strand alignments, identity on plus.  This mirrors the
-            # strand_normalize logic in qc_filter.py and produces the correct ~184 mismatches
-            # that correspond to the markers qc_filter.py removes at the design-conflict step.
-            if len(ref_char) == 1 and len(alt_char) == 1:
-                try:
-                    genome_base = fasta.fetch(
-                        winning_ts["Chr"], c_pos - 1, c_pos
-                    ).upper()
-                except (ValueError, KeyError):
-                    genome_base = None
-                ref_char_fwd = (
-                    _COMP.get(ref_char, ref_char)
-                    if winning_ts["Strand"] == "-"
-                    else ref_char
-                )
-                if genome_base is None or genome_base == "":
-                    ref_base_match_str = "False"
-                    counters.ref_base_mismatch += 1
-                elif genome_base == ref_char_fwd:
-                    ref_base_match_str = "True"
+                if best_ts is not None and ts_tie != "ambiguous":
+                    # TopSeq-only: derive coordinate from CIGAR
+                    target_idx = info["PreLen"] if best_ts["Strand"] == "+" else info["PostLen"]
+                    cigar_coord, cigar_in_sc = parse_cigar_to_ref_pos(
+                        best_ts["Pos"], best_ts["Cigar"], target_idx
+                    )
+                    if cigar_in_sc or cigar_coord == 0:
+                        _append_unmapped_cols("N/A", "N/A")
+                        new_cols[col_align_status][-1] = align_status
+                        counters.topseq_rescue_failed_softclip += 1
+                        counters.final_unmapped += 1
+                        continue
+
+                    ref_alt_result = determine_ref_alt_v2(
+                        best_allele, best_ts, ts_aligns, info,
+                        fasta, best_ts["Chr"], cigar_coord, best_ts["Strand"]
+                    )
+                    if ref_alt_result[0] is None:
+                        _append_unmapped_cols("N/A", "N/A")
+                        new_cols[col_align_status][-1] = align_status
+                        counters.topseq_rescue_failed_refalt += 1
+                        counters.final_unmapped += 1
+                        continue
+
+                    ref_char, alt_char, refalt_agree = ref_alt_result
+                    ref_base_match_str = "N/A"
+                    if len(ref_char) == 1 and len(alt_char) == 1:
+                        try:
+                            genome_base = fasta.fetch(
+                                best_ts["Chr"], cigar_coord - 1, cigar_coord
+                            ).upper()
+                            ref_char_fwd = (_COMP.get(ref_char, ref_char)
+                                            if best_ts["Strand"] == "-" else ref_char)
+                            ref_base_match_str = "True" if genome_base == ref_char_fwd else "False"
+                            if ref_base_match_str == "False":
+                                counters.ref_base_mismatch += 1
+                        except (ValueError, KeyError):
+                            ref_base_match_str = "False"
+                            counters.ref_base_mismatch += 1
+
+                    new_cols[col_chr].append(best_ts["Chr"])
+                    new_cols[col_pos].append(cigar_coord)
+                    new_cols[col_strand].append(best_ts["Strand"])
+                    new_cols[col_ref].append(ref_char)
+                    new_cols[col_alt].append(alt_char)
+                    new_cols[col_mapq_ts].append(best_ts["MAPQ"])
+                    new_cols[col_mapq_pb].append(float('nan'))
+                    new_cols[col_delta].append(delta_score)
+                    new_cols[col_qcov].append(compute_qcov(best_ts["Cigar"]))
+                    new_cols[col_scfrac].append(compute_soft_clip_frac(best_ts["Cigar"]))
+                    new_cols[col_cigar_coord].append(cigar_coord)
+                    new_cols[col_probe_coord].append(0)
+                    new_cols[col_coord_delta].append(-1)
+                    new_cols[col_coord_source].append("cigar")
+                    new_cols[col_ref_match].append(ref_base_match_str)
+                    new_cols[col_probe_strand].append("N/A")
+                    new_cols[col_strand_agree].append("N/A")
+                    new_cols[col_align_status].append(align_status)
+                    new_cols[col_anchor].append("topseq_only")
+                    new_cols[col_tie].append(ts_tie)
+                    new_cols[col_refalt_agree].append(refalt_agree)
+                    counters.final_topseq_only += 1
+                    continue
+
                 else:
-                    # Forward-strand genome base does not match strand-normalised ref.
-                    ref_base_match_str = "False"
-                    counters.ref_base_mismatch += 1
-            else:
-                ref_base_match_str = "N/A"  # indel: single-base lookup not applicable
+                    # Try probe-only rescue
+                    best_pb, pb_tie = best_probe_rescue(pb_aligns)
 
-            min_mapq = min(winning_ts["MAPQ"], winning_pb["MAPQ"])
-            if min_mapq == 60:
-                counters.mapq_60    += 1
-            elif min_mapq >= 30:
-                counters.mapq_30_59 += 1
-            elif min_mapq >= 1:
-                counters.mapq_1_29  += 1
-            else:
-                counters.mapq_0     += 1
+                    if best_pb is None:
+                        _append_unmapped_cols("N/A", pb_tie if pb_tie else "N/A")
+                        new_cols[col_align_status][-1] = align_status
+                        counters.final_unmapped += 1
+                        continue
 
-            # CIGAR-based coordinate: cross-validator and coordinate override.
-            # CoordDelta stores |probe_coord - cigar_coord| for diagnostics.
-            # When delta >= 2, CIGAR coordinate is used as final position
-            # (benchmark shows it outperforms probe coord at delta >= 2).
-            # For indel markers (one allele is empty string), CIGAR coordinate
-            # is always used as the final position when available: probe-based
-            # coordinates are unreliable for multi-base alleles.
+                    if pb_tie == "ambiguous":
+                        _append_unmapped_cols("N/A", "ambiguous")
+                        new_cols[col_align_status][-1] = align_status
+                        counters.final_probe_rescue_ambiguous += 1
+                        counters.final_ambiguous += 1
+                        continue
+
+                    # Probe-only: derive coordinate from probe CIGAR
+                    pb_coord = get_probe_coordinate(
+                        best_pb["Pos"], best_pb["Cigar"], best_pb["Strand"], assay
+                    )
+                    ref_alt_result = determine_ref_alt_v2(
+                        None, None, ts_aligns, info,
+                        fasta, best_pb["Chr"], pb_coord, best_pb["Strand"]
+                    )
+                    if ref_alt_result[0] is None:
+                        _append_unmapped_cols("N/A", "N/A")
+                        new_cols[col_align_status][-1] = align_status
+                        counters.final_unmapped += 1
+                        continue
+
+                    ref_char, alt_char, refalt_agree = ref_alt_result
+
+                    new_cols[col_chr].append(best_pb["Chr"])
+                    new_cols[col_pos].append(pb_coord)
+                    new_cols[col_strand].append(best_pb["Strand"])
+                    new_cols[col_ref].append(ref_char)
+                    new_cols[col_alt].append(alt_char)
+                    new_cols[col_mapq_ts].append(float('nan'))
+                    new_cols[col_mapq_pb].append(best_pb["MAPQ"])
+                    new_cols[col_delta].append(-1)
+                    new_cols[col_qcov].append(0.0)
+                    new_cols[col_scfrac].append(0.0)
+                    new_cols[col_cigar_coord].append(0)
+                    new_cols[col_probe_coord].append(pb_coord)
+                    new_cols[col_coord_delta].append(-1)
+                    new_cols[col_coord_source].append("probe")
+                    new_cols[col_ref_match].append("N/A")
+                    new_cols[col_probe_strand].append(best_pb["Strand"])
+                    new_cols[col_strand_agree].append("N/A")
+                    new_cols[col_align_status].append(align_status)
+                    new_cols[col_anchor].append("probe_only")
+                    new_cols[col_tie].append(pb_tie)
+                    new_cols[col_refalt_agree].append(refalt_agree)
+                    counters.final_probe_only += 1
+                    continue
+
+            # ── Winner path (topseq_n_probe) ─────────────────────────────────
+            # Coordinate computation
+            c_pos = get_probe_coordinate(
+                winning_pb["Pos"], winning_pb["Cigar"],
+                winning_pb["Strand"], assay
+            )
             target_idx = info["PreLen"] if winning_ts["Strand"] == "+" else info["PostLen"]
             cigar_coord, cigar_in_sc = parse_cigar_to_ref_pos(
                 winning_ts["Pos"], winning_ts["Cigar"], target_idx
             )
-            is_indel = len(ref_char) == 0 or len(alt_char) == 0
+            is_indel = len(candidates_info[name]["AlleleA"]) != 1 or \
+                       len(candidates_info[name]["AlleleB"]) != 1
             if cigar_in_sc:
                 cigar_out       = 0
                 coord_delta_val = -1
@@ -1477,17 +1352,75 @@ def run_remapping(args):
                     final_pos    = c_pos
                     coord_source = "probe"
 
-            ilmn_strand = str(row.get("IlmnStrand", "")).strip().upper()
+            # Ref/Alt determination (uses final_pos = MapInfo)
+            ref_alt_result = determine_ref_alt_v2(
+                winning_allele, winning_ts, ts_aligns, info,
+                fasta, winning_ts["Chr"], final_pos, winning_ts["Strand"]
+            )
+            if ref_alt_result[0] is None:
+                ambiguous_rows.extend({
+                    "Name": name,
+                    "AmbiguityReason": "NM_and_genome_tie",
+                    "PairRank": 1,
+                    "TopSeqAllele": winning_allele,
+                    "TopSeqChr": winning_ts["Chr"],
+                    "TopSeqPos": winning_ts["Pos"],
+                    "TopSeqStrand": winning_ts["Strand"],
+                    "TopSeqMAPQ": winning_ts["MAPQ"],
+                    "TopSeqNM": winning_ts["NM"],
+                    "ProbeChr": winning_pb["Chr"],
+                    "ProbePos": winning_pb["Pos"],
+                    "ProbeMAPQ": winning_pb["MAPQ"],
+                    "MinMAPQ": min(winning_ts["MAPQ"], winning_pb["MAPQ"]),
+                } for _ in [1])
+                _append_unmapped_cols("N/A", "ambiguous")
+                new_cols[col_align_status][-1] = align_status
+                counters.ref_alt_nm_tie  += 1
+                counters.final_ambiguous += 1
+                continue
+
+            ref_char, alt_char, refalt_agree = ref_alt_result
+
+            # Deletion minus-strand coordinate correction
+            if len(ref_char) > len(alt_char) and winning_ts["Strand"] == "-":
+                if coord_source == "probe":
+                    final_pos -= len(ref_char) - len(alt_char)
+                    c_pos     -= len(ref_char) - len(alt_char)
+
+            # Probe strand agreement (reporting only)
             pb_strand, sa_expected = compute_probe_strand_agreement(
                 ilmn_strand=ilmn_strand,
                 topseq_strand=winning_ts["Strand"],
                 probe_align_strand=winning_pb["Strand"],
-                probe_seq=str(row.get("AlleleA_ProbeSeq", "")),
-                topseq_a=info.get("TopSeqA", ""),
-                topseq_b=info.get("TopSeqB", ""),
+                probe_seq=probe_seq,
+                topseq_a=topseq_a,
+                topseq_b=topseq_b,
             )
             if sa_expected == "False":
                 counters.strand_agreement_unexpected += 1
+
+            # RefBaseMatch
+            ref_base_match_str = "N/A"
+            if len(ref_char) == 1 and len(alt_char) == 1:
+                try:
+                    genome_base = fasta.fetch(
+                        winning_ts["Chr"], final_pos - 1, final_pos
+                    ).upper()
+                    ref_char_fwd = (_COMP.get(ref_char, ref_char)
+                                    if winning_ts["Strand"] == "-" else ref_char)
+                    ref_base_match_str = "True" if genome_base == ref_char_fwd else "False"
+                    if ref_base_match_str == "False":
+                        counters.ref_base_mismatch += 1
+                except (ValueError, KeyError):
+                    ref_base_match_str = "False"
+                    counters.ref_base_mismatch += 1
+
+            # MAPQ distribution counter (kept for report)
+            min_mapq = min(winning_ts["MAPQ"], winning_pb["MAPQ"])
+            if min_mapq == 60:   counters.mapq_60    += 1
+            elif min_mapq >= 30: counters.mapq_30_59 += 1
+            elif min_mapq >= 1:  counters.mapq_1_29  += 1
+            else:                counters.mapq_0     += 1
 
             new_cols[col_chr].append(winning_ts["Chr"])
             new_cols[col_pos].append(final_pos)
@@ -1500,23 +1433,24 @@ def run_remapping(args):
             new_cols[col_qcov].append(compute_qcov(winning_ts["Cigar"]))
             new_cols[col_scfrac].append(compute_soft_clip_frac(winning_ts["Cigar"]))
             new_cols[col_cigar_coord].append(cigar_out)
-            new_cols[col_probe_coord].append(c_pos)   # raw probe-derived coord, before override
+            new_cols[col_probe_coord].append(c_pos)
             new_cols[col_coord_delta].append(coord_delta_val)
             new_cols[col_coord_source].append(coord_source)
             new_cols[col_ref_match].append(ref_base_match_str)
             new_cols[col_probe_strand].append(pb_strand)
             new_cols[col_strand_agree].append(sa_expected)
-            new_cols[col_align_status].append(status)
-            new_cols[col_anchor].append("N/A")
-            new_cols[col_tie].append("N/A")
-            new_cols[col_refalt_agree].append("N/A")
+            new_cols[col_align_status].append(align_status)
+            new_cols[col_anchor].append(anchor)
+            new_cols[col_tie].append(tie_status)
+            new_cols[col_refalt_agree].append(refalt_agree)
 
-            if status == "scaffold_resolved":
+            if tie_status == "scaffold_resolved":
                 counters.final_scaffold_resolved += 1
-            elif status == "nm_position_resolved":
+            elif tie_status == "NM_resolved":
                 counters.final_nm_position_resolved += 1
-            elif status == "ref_resolved":
-                counters.final_ref_resolved += 1
+            elif refalt_agree in ("NM_only", "NM_tied"):
+                counters.ref_alt_ref_resolved += 1
+                counters.final_mapped += 1
             else:
                 counters.final_mapped += 1
 

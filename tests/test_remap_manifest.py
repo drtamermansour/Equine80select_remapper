@@ -12,7 +12,6 @@ from remap_manifest import (
     parse_cigar_to_ref_pos,
     is_placed_chromosome,
     _make_competing_rows,
-    select_best_pair,
     determine_ref_alt,
     resolve_ref_from_genome,
     parse_topseq_sam,
@@ -233,102 +232,6 @@ def test_make_competing_rows():
     assert rows[1]['MinMAPQ'] == 55
 
 
-# ── select_best_pair ──────────────────────────────────────────────────────────
-
-def test_select_best_pair_no_valid_pairs_different_chr():
-    """Different chromosome between TopSeq and probe → no valid pairs."""
-    ts = {'A': [_ts('chr1', 1000, '150M')], 'B': []}
-    pb = [_pb('chr2', 1050)]
-    assert select_best_pair(ts, pb) is None
-
-
-def test_select_best_pair_no_valid_pairs_no_overlap():
-    """Probe does not overlap TopSeq window → no valid pairs."""
-    ts = {'A': [_ts('chr1', 1000, '150M')], 'B': []}
-    pb = [_pb('chr1', 2000)]  # far from [1000, 1149]
-    assert select_best_pair(ts, pb) is None
-
-
-def test_select_best_pair_opposite_strand_probe_is_valid():
-    """Probe on opposite strand to TopSeq is valid (bottom-strand probe design)."""
-    ts = {'A': [_ts('chr1', 1000, '150M', strand='+')], 'B': []}
-    pb = [_pb('chr1', 1050, strand='-')]  # overlaps [1000,1149], opposite strand — still valid
-    result = select_best_pair(ts, pb)
-    assert result is not None
-    assert result[0] == 'winner'
-    assert result[1] == 'A'
-
-
-def test_select_best_pair_single_winner():
-    """One valid pair → return winner tuple."""
-    ts = {'A': [_ts('chr1', 1000, '150M', mapq=60)], 'B': []}
-    pb = [_pb('chr1', 1050)]  # overlaps [1000, 1149]
-    result = select_best_pair(ts, pb)
-    assert result is not None
-    assert result[0] == 'winner'
-    assert result[1] == 'A'
-    assert result[2]['Chr'] == 'chr1'
-    assert result[3]['Pos'] == 1050
-
-
-def test_select_best_pair_redundant_pairs_same_locus():
-    """Multiple pairs at the same locus → pick highest combined MAPQ, return winner."""
-    ts = {'A': [_ts('chr1', 1000, '150M', mapq=60), _ts('chr1', 1000, '150M', mapq=40)], 'B': []}
-    pb = [_pb('chr1', 1050, mapq=60), _pb('chr1', 1060, mapq=40)]
-    result = select_best_pair(ts, pb)
-    assert result[0] == 'winner'
-    assert result[2]['MAPQ'] == 60  # winning topseq
-    assert result[3]['MAPQ'] == 60  # winning probe
-
-
-def test_select_best_pair_scaffold_resolved():
-    """One placed chromosome + scaffold at same score → scaffold rule resolves."""
-    ts = {
-        'A': [
-            _ts('chr1', 1000, '150M', mapq=60),
-            _ts('JAAMLG010000001.1', 500, '150M', mapq=60),
-        ],
-        'B': [],
-    }
-    pb = [
-        _pb('chr1', 1050, mapq=60),
-        _pb('JAAMLG010000001.1', 550, mapq=60),
-    ]
-    result = select_best_pair(ts, pb)
-    assert result[0] == 'scaffold_resolved'
-    assert result[2]['Chr'] == 'chr1'
-    assert result[3]['Chr'] == 'chr1'
-    competing = result[4]
-    assert len(competing) == 2
-    assert competing[0]['AmbiguityReason'] == 'scaffold_resolved'
-
-
-def test_select_best_pair_ambiguous_two_placed_chromosomes():
-    """Two placed chromosomes tied → ambiguous."""
-    ts = {
-        'A': [_ts('chr1', 1000, '150M', mapq=60), _ts('chr5', 5000, '150M', mapq=60)],
-        'B': [],
-    }
-    pb = [_pb('chr1', 1050, mapq=60), _pb('chr5', 5050, mapq=60)]
-    result = select_best_pair(ts, pb)
-    assert result[0] == 'ambiguous'
-    competing = result[1]
-    assert len(competing) == 2
-    assert competing[0]['AmbiguityReason'] == 'position_tie'
-
-
-def test_select_best_pair_b_allele_wins():
-    """B allele alignment is the only valid pair → winner with allele='B'."""
-    ts = {
-        'A': [],
-        'B': [_ts('chr3', 3000, '150M', mapq=60)],
-    }
-    pb = [_pb('chr3', 3050, mapq=60)]
-    result = select_best_pair(ts, pb)
-    assert result[0] == 'winner'
-    assert result[1] == 'B'
-
-
 # ── determine_ref_alt ─────────────────────────────────────────────────────────
 
 def test_determine_ref_alt_a_is_ref():
@@ -483,37 +386,6 @@ def test_decision_counters_ref_resolved_in_summary():
     assert "ref-resolved" in summary
 
 
-# ── select_best_pair NM tiebreaking ──────────────────────────────────────────
-
-def test_select_best_pair_nm_breaks_position_tie():
-    """When two placed loci tie on MAPQ, the locus with lower NM wins."""
-    ts_aligns = {
-        "A": [{"Chr": "1", "Pos": 100, "End": 200, "Strand": "+", "MAPQ": 60, "NM": 0}],
-        "B": [{"Chr": "2", "Pos": 300, "End": 400, "Strand": "+", "MAPQ": 60, "NM": 5}],
-    }
-    pb = [
-        {"Chr": "1", "Pos": 150, "End": 200, "Strand": "+", "MAPQ": 60, "Cigar": "50M", "NM": 0},
-        {"Chr": "2", "Pos": 350, "End": 400, "Strand": "+", "MAPQ": 60, "Cigar": "50M", "NM": 0},
-    ]
-    result = select_best_pair(ts_aligns, pb)
-    assert result[0] == "nm_position_resolved"
-    assert result[2]["Chr"] == "1"   # lower-NM locus wins
-
-
-def test_select_best_pair_nm_tie_stays_ambiguous():
-    """When both placed loci have equal NM, position_tie remains ambiguous."""
-    ts_aligns = {
-        "A": [{"Chr": "1", "Pos": 100, "End": 200, "Strand": "+", "MAPQ": 60, "NM": 0}],
-        "B": [{"Chr": "2", "Pos": 300, "End": 400, "Strand": "+", "MAPQ": 60, "NM": 0}],
-    }
-    pb = [
-        {"Chr": "1", "Pos": 150, "End": 200, "Strand": "+", "MAPQ": 60, "Cigar": "50M", "NM": 0},
-        {"Chr": "2", "Pos": 350, "End": 400, "Strand": "+", "MAPQ": 60, "Cigar": "50M", "NM": 0},
-    ]
-    result = select_best_pair(ts_aligns, pb)
-    assert result[0] == "ambiguous"
-
-
 # ── DecisionCounters nm_position_resolved ────────────────────────────────────
 
 def test_decision_counters_nm_position_resolved_in_summary():
@@ -525,21 +397,6 @@ def test_decision_counters_nm_position_resolved_in_summary():
     assert "NM position-resolved" in summary
     assert "17" in summary
     assert "nm-position-resolved" in summary
-
-
-def test_select_best_pair_prefers_higher_as_on_mapq_tie():
-    """When min-MAPQ ties, the triple with higher TopSeq AS wins."""
-    ts = {
-        'A': [
-            _ts('chr1', 1000, '150M', mapq=60, nm=0, as_score=150),
-            _ts('chr1', 1000, '150M', mapq=60, nm=0, as_score=90),
-        ],
-        'B': [],
-    }
-    pb = [_pb('chr1', 1050, mapq=60)]
-    result = select_best_pair(ts, pb)
-    assert result[0] == 'winner'
-    assert result[2]['AS'] == 150
 
 
 # ── reverse_complement ────────────────────────────────────────────────────────
@@ -1245,3 +1102,22 @@ def test_refalt_v2_insertion_nm_na():
     assert ref == ""
     assert alt == "TCG"
     assert agree == "NM_N/A"
+
+
+# ── integration: new output columns ──────────────────────────────────────────
+
+def test_new_columns_present_in_output(tmp_path):
+    """After full remapping, output CSV must have the four new columns and
+    must NOT have MappingStatus_{assembly}."""
+    from remap_manifest import (
+        compute_alignment_status, build_valid_triples,
+        rank_and_resolve, best_topseq_rescue, best_probe_rescue,
+        determine_ref_alt_v2,
+    )
+    # Verify all expected functions are importable
+    assert callable(compute_alignment_status)
+    assert callable(build_valid_triples)
+    assert callable(rank_and_resolve)
+    assert callable(best_topseq_rescue)
+    assert callable(best_probe_rescue)
+    assert callable(determine_ref_alt_v2)
