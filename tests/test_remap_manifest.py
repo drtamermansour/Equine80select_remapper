@@ -456,6 +456,14 @@ def test_resolve_ref_minus_strand_b_matches():
     assert result == ("T", "C")
 
 
+def test_resolve_ref_minus_strand_neither_matches():
+    """On minus strand, neither complement matches genome base → returns None."""
+    fasta = _mock_fasta("C")
+    result = resolve_ref_from_genome(fasta, "1", 1000, "A", "T", "-")
+    # 'A' complements to 'T', 'T' complements to 'A'; neither equals 'C' → None
+    assert result is None
+
+
 # ── DecisionCounters ──────────────────────────────────────────────────────────
 
 def test_decision_counters_ref_resolved_in_summary():

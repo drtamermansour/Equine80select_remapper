@@ -336,7 +336,7 @@ def parse_topseq_sam(sam_path):
 def parse_probe_sam(sam_path):
     """
     Reads the probe SAM and returns a dict:
-      { snp_name: [ {Chr, Pos, Cigar, Strand, MAPQ, AS, End}, ... ] }
+      { snp_name: [ {Chr, Pos, Cigar, Strand, MAPQ, AS, NM, End}, ... ] }
     All mapped alignments are kept (primary + secondary, for overlap checking).
     """
     results = {}
