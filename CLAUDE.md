@@ -62,7 +62,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 ## `scripts/remap_manifest.py`
 
 **Input:** Illumina manifest CSV, reference FASTA
-**Output:** `{prefix}_remapped_{assembly}.csv` — all input rows plus 14 new columns
+**Output:** `{prefix}_remapped_{assembly}.csv` — all input rows plus 17 new columns
 
 ### Algorithm
 
@@ -103,7 +103,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 | `CoordSource_equCab3` | `"probe"` or `"cigar"` — which coordinate is in MapInfo |
 | `RefBaseMatch_equCab3` | `"True"` / `"False"` / `"N/A"` — genome ref base at MapInfo matches Ref (strand-normalised)? |
 
-**Current v2→EquCab3 marker counts:** mapped: 82,482 | ref_resolved: 105 | topseq_only: 1,336 | ambiguous: 146 | unmapped: 250
+**Note:** The v1 algorithm counts (mapped: 82,482 | ref_resolved: 105 | topseq_only: 1,336 | ambiguous: 146 | unmapped: 250) are stale and will differ under the current algorithm. See `remapping_Report.txt` in the output directory for up-to-date counts.
 
 ### Supplementary outputs (same directory as main CSV)
 
@@ -111,7 +111,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 - `remapping_Report.txt` — decision summary
 
 ### CLI flags
-`-i` (manifest), `-r` (reference FASTA), `-o` (output dir), `-a` (assembly name), `--threads`, `--temp-dir`, `--keep-temp`, `--resume`
+`-i` (manifest), `-r` (reference FASTA), `-o` (output dir), `-a` (assembly name), `--threads`, `--temp-dir`, `--resume`
 
 ---
 
@@ -259,7 +259,7 @@ chr  pos  snpID  SNP_alleles  genomic_alleles  SNP_ref_allele  genomic_ref_allel
 | `run_pipeline.sh` | Main orchestrator |
 | `submit_slurm.sh` | SLURM wrapper |
 | `myRun.sh` | Exact flags used for Equine80select → EquCab3 |
-| `scripts/remap_manifest.py` | Dual alignment + coordinate resolution → remapped CSV (14 new columns) |
+| `scripts/remap_manifest.py` | Dual alignment + coordinate resolution → remapped CSV (17 new columns) |
 | `scripts/qc_filter.py` | QC cascade, allele decision, VCF/BIM/map generation |
 | `scripts/benchmark_compare.py` | Standalone accuracy benchmark (run manually after pipeline) |
 | `scripts/benchmark_cigar_vs_probe.py` | Three-way coord comparison: probe vs CIGAR vs final (run manually) |

@@ -915,11 +915,6 @@ class DecisionCounters:
         lines.append("=== REMAPPING DECISION SUMMARY ===")
         lines.append(f"  {'Total markers loaded:':<{W - 2}} {self.total_loaded:>8,}")
         lines.append("")
-        lines.append("TopGenomicSeq alignment:")
-        row("Both A and B aligned:", self.topseq_both)
-        row("Only one allele aligned:", self.topseq_one)
-        row("Neither aligned \u2192 unmapped:", self.topseq_neither)
-        lines.append("")
         lines.append("Pair filtering (chr + strand + overlap):")
         row("\u22651 valid pair:", self.valid_pair_found)
         row("No valid pair (total):", self.no_valid_pair)
@@ -934,7 +929,6 @@ class DecisionCounters:
         row("True tie \u2192 ambiguous:", self.position_ambiguous)
         lines.append("")
         lines.append("Ref/Alt (NM comparison):")
-        row("Clear NM winner:", self.ref_alt_clear)
         row("NM tie resolved by ref lookup:", self.ref_alt_ref_resolved)
         row("NM tie \u2192 ambiguous (triallelic):", self.ref_alt_nm_tie)
         row("Genome ref base mismatches (see RefBaseMatch col):", self.ref_base_mismatch)
@@ -948,7 +942,6 @@ class DecisionCounters:
         lines.append("")
         lines.append("Final (all in main output):")
         row("mapped:", self.final_mapped)
-        row("ref-resolved (ref lookup):", self.final_ref_resolved)
         row("nm-position-resolved:", self.final_nm_position_resolved)
         row("scaffold-resolved (scaffold_resolved_markers.csv):", self.final_scaffold_resolved)
         row("topseq-only (CIGAR rescue, no probe):", self.final_topseq_only)
@@ -1358,7 +1351,7 @@ def run_remapping(args):
                 fasta, winning_ts["Chr"], final_pos, winning_ts["Strand"]
             )
             if ref_alt_result[0] is None:
-                ambiguous_rows.extend({
+                ambiguous_rows.append({
                     "Name": name,
                     "AmbiguityReason": "NM_and_genome_tie",
                     "PairRank": 1,
@@ -1372,7 +1365,7 @@ def run_remapping(args):
                     "ProbePos": winning_pb["Pos"],
                     "ProbeMAPQ": winning_pb["MAPQ"],
                     "MinMAPQ": min(winning_ts["MAPQ"], winning_pb["MAPQ"]),
-                } for _ in [1])
+                })
                 _append_unmapped_cols("N/A", "ambiguous")
                 new_cols[col_align_status][-1] = align_status
                 counters.ref_alt_nm_tie  += 1

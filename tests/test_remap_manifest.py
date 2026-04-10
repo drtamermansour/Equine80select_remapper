@@ -376,14 +376,12 @@ def test_resolve_ref_minus_strand_neither_matches():
 # ── DecisionCounters ──────────────────────────────────────────────────────────
 
 def test_decision_counters_ref_resolved_in_summary():
-    """format_summary must include ref_resolved line and final_ref_resolved line."""
+    """format_summary must include the NM-tie-resolved-by-ref-lookup row."""
     c = DecisionCounters()
     c.ref_alt_ref_resolved = 87
-    c.final_ref_resolved   = 87
     summary = c.format_summary()
     assert "NM tie resolved by ref lookup" in summary
     assert "87" in summary
-    assert "ref-resolved" in summary
 
 
 # ── DecisionCounters nm_position_resolved ────────────────────────────────────
