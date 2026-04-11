@@ -811,7 +811,19 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
         gref = ref_char  # longer or non-empty allele
 
         if gref == "":
-            # Insertion: ref is empty string, nothing to validate
+            # Single-base insertion: NM assigned empty string as Ref, but the
+            # genome base at final_pos may match alt_char, meaning NM got it
+            # backwards (genome has the base → it is Ref, empty is Alt).
+            if len(alt_char) == 1:
+                try:
+                    genome_base = fasta.fetch(chr_, final_pos - 1, final_pos).upper()
+                    alt_fwd = (_COMP.get(alt_char, alt_char)
+                               if strand == "-" else alt_char)
+                    if genome_base == alt_fwd:
+                        # Genome confirms alt_char is actually Ref; swap.
+                        return alt_char, ref_char, "NM_corrected"
+                except (ValueError, KeyError):
+                    pass
             return ref_char, alt_char, "NM_N/A"
 
         # Deletion: validate gref against genome

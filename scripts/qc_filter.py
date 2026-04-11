@@ -5,7 +5,7 @@ Takes the remapped manifest (output of remap_manifest.py) and applies a cascade 
 quality filters, then generates all downstream output files:
 
   Filter cascade (with marker counts at each stage written to QC_Report.txt):
-    1. Unmapped filter     — remove markers where Strand_{assembly} == 'N/A'
+    1. Strand=N/A filter   — remove markers where Strand_{assembly} == 'N/A' (unmapped + ambiguous)
     2. MAPQ filter         — remove markers below MAPQ thresholds
     3. Design conflict     — keep only markers where remapped Ref matches genome Ref
     4. Polymorphic sites   — remove positions with conflicting Ref/Alt assignments
@@ -436,13 +436,19 @@ def run_qc(args):
     write_mapq_histo(df["MAPQ_Probe"].dropna(), 2,
                      os.path.join(assessment_dir, "MAPQ_Probe.histo"))
 
-    # ── Filter 1: Unmapped (Strand == N/A) ──────────────────────────────────
+    # ── Filter 1: Strand=N/A (unmapped + ambiguous) ─────────────────────────
     df_mapped = df[df[col_strand].isin(["+", "-"])].copy()
-    qc_stats["After unmapped filter"] = len(df_mapped)
-    print(f"[qc] After unmapped filter: {len(df_mapped):,} ({len(df) - len(df_mapped):,} removed)")
+    qc_stats["After Strand=N/A filter (unmapped + ambiguous)"] = len(df_mapped)
+    print(f"[qc] After Strand=N/A filter (unmapped + ambiguous): {len(df_mapped):,} ({len(df) - len(df_mapped):,} removed)")
 
     # ── Filter 2: MAPQ filter ────────────────────────────────────────────────
-    df_topseq_filtered = df_mapped[df_mapped["MAPQ_TopGenomicSeq"] >= args.mapq_topseq]
+    # NaN MAPQ_TopGenomicSeq means probe_only (no TopSeq alignment) — exempt from this filter.
+    ts_mapq = df_mapped["MAPQ_TopGenomicSeq"]
+    if args.mapq_topseq > 0:
+        ts_fail = ts_mapq.notna() & (ts_mapq < args.mapq_topseq)
+        df_topseq_filtered = df_mapped[~ts_fail]
+    else:
+        df_topseq_filtered = df_mapped
     df_mapq = apply_probe_mapq_filter(df_topseq_filtered, args.mapq_probe).copy()
     qc_stats["After MAPQ filter"] = len(df_mapq)
     print(f"[qc] After MAPQ filter (TopSeq>={args.mapq_topseq}): {len(df_mapq):,} ({len(df_mapped) - len(df_mapq):,} removed)")

@@ -90,20 +90,32 @@ bash run_pipeline.sh \
 
 ### All Options
 
+#### General
+
 | Flag | Default | Description |
 |---|---|---|
 | `-i / --manifest` | *(required)* | Path to the Illumina manifest CSV |
 | `-r / --reference` | *(required)* | Path to the target reference genome FASTA |
 | `-a / --assembly` | derived from FASTA filename | Assembly name used to label outputs |
 | `-o / --output-dir` | `./output` | Output directory |
+| `--keep-temp` | off | Retain intermediate FASTA/SAM files after pipeline completes |
+| `--resume` | off | Skip step 2 (`remap_manifest.py`) if the remapped CSV already exists |
+
+#### Remapping options (forwarded to `remap_manifest.py`)
+
+| Flag | Default | Description |
+|---|---|---|
 | `-t / --threads` | `4` | Threads for minimap2 |
-| `--mapq-topseq` | `30` | Minimum MAPQ for TopGenomicSeq alignments |
-| `--mapq-probe` | `0` (disabled) | Minimum MAPQ for probe alignments |
-| `--coord-delta` | `-1` (disabled) | Remove markers where `\|probe_coord − CIGAR_coord\| > N` and all markers where `anchor_{assembly} == "topseq_only"` |
-| `--exclude-indels` | off | Remove indel markers from all outputs (VCF, BIM, map file) |
+
+#### QC filter options (forwarded to `qc_filter.py`)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--mapq-topseq` | `30` | Minimum MAPQ for TopGenomicSeq alignments; `0` disables the filter and allows `probe_only` markers to pass |
+| `--mapq-probe` | `0` (disabled) | Minimum MAPQ for probe alignments; `0` disables the filter and allows `topseq_only` markers to pass |
+| `--coord-delta` | `-1` (disabled) | Remove markers where `\|probe_coord − CIGAR_coord\| > N` and all `topseq_only` markers |
+| `--exclude-indels` | off | Remove all indel markers from outputs (VCF, BIM, map file) |
 | `--require-strand-agreement` | off | Remove markers where probe strand disagrees with expected orientation |
-| `--keep-temp` | off | Retain intermediate FASTA/SAM files |
-| `--resume` | off | Skip minimap2 if SAM files already exist |
 
 For HPC clusters:
 
@@ -418,7 +430,7 @@ Filters applied sequentially by `qc_filter.py`; `QC_Report.txt` records counts a
 | Stage | Filter condition | Flag |
 |---|---|---|
 | 1. Unmapped | `Strand_{assembly} == N/A` | always on |
-| 2. MAPQ | `MAPQ_TopGenomicSeq < --mapq-topseq` | `--mapq-topseq 30` |
+| 2. MAPQ | `MAPQ_TopGenomicSeq < --mapq-topseq` (probe_only markers exempt); `MAPQ_Probe < --mapq-probe` (topseq_only markers exempt) | `--mapq-topseq 30`; `--mapq-probe 0` (disabled) |
 | 2.5. CoordDelta *(optional)* | `CoordDelta > N` OR `anchor_{assembly} == "topseq_only"` | `--coord-delta N` (N ≥ 0); disabled by default |
 | 3. Strand agreement *(optional)* | `StrandAgreementAsExpected == False` | `--require-strand-agreement`; disabled by default |
 | 4. Design conflict | SNPs: strand-normalised Ref ≠ genome ref base at MapInfo; deletions: pysam fetch of ref ≠ gref; insertions: always pass | always on |

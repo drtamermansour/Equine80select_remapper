@@ -122,7 +122,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 
 ### Filter cascade
 
-1. `Strand_{assembly} == 'N/A'` → unmapped, remove
+1. `Strand_{assembly} == 'N/A'` → unmapped **or ambiguous**, remove
 2. `MAPQ_TopGenomicSeq < --mapq-topseq` → low-confidence, remove
 3. *(optional)* `CoordDelta > --coord-delta` OR `anchor_{assembly} == "topseq_only"` → remove; disabled by default (`--coord-delta -1`)
 4. *(optional)* `StrandAgreementAsExpected == False` → remove; disabled by default (`--require-strand-agreement`)
@@ -139,7 +139,7 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 ### Expected counts (v2 manifest → EquCab3, default `--mapq-topseq 30`, no `--coord-delta`)
 ```
 Input:                    84,319
-After unmapped:           83,923   (-396)
+After Strand=N/A (unmapped+ambiguous): 83,923   (-396)
 After MAPQ (>=30):        82,406   (-1,517)
 After design conflict:    82,178   (-228)
 After polymorphic:        82,147   (-31)
