@@ -12,7 +12,6 @@ quality filters, then generates all downstream output files:
     5. Consistency filter  — remove markers with inconsistent probe/topseq alignments
 
   Outputs:
-    allele_usage_decision.txt
     _matchingSNPs.vcf
     _matchingSNPs_binary.vcf
     _matchingSNPs_binary_consistantMapping.vcf
@@ -83,45 +82,6 @@ def parse_args():
                    help="Remove indel markers from all outputs (default: False = include indels). "
                         "Indels are identified by an empty-string allele in Ref or Alt.")
     return p.parse_args()
-
-
-# ── ALLELE DECISION ──────────────────────────────────────────────────────────
-
-def allele_usage_decision(row, strand_col, assembly):
-    """
-    Determines whether the manifest SNP alleles should be used 'as_is' or 'complement'
-    when mapping to the new assembly.
-
-    Rules (based on IlmnStrand, SourceStrand, SourceSeq vs TopGenomicSeq, and Strand):
-      The XOR logic reduces to: flip if an odd number of the three conditions are True.
-        cond1: IlmnStrand != SourceStrand
-        cond2: SourceSeq  != TopGenomicSeq
-        cond3: Strand == '-'
-      flip = cond1 XOR cond2 XOR cond3
-      decision = 'complement' if flip else 'as_is'
-
-    For indel markers ([D/I] in SNP column), the prefix 'indel_' is prepended.
-    Markers with N/A strand are excluded upstream and should not reach this function.
-    """
-    ilmn   = row.get("IlmnStrand", "")
-    src    = row.get("SourceStrand", "")
-    srcseq = row.get("SourceSeq", "")
-    topseq = row.get("TopGenomicSeq", "")
-    strand = row.get(strand_col, "")
-    snp    = row.get("SNP", "")
-
-    cond1 = ilmn != src
-    cond2 = srcseq != topseq
-    cond3 = strand == "-"
-    flip = cond1 ^ cond2 ^ cond3
-
-    decision = "complement" if flip else "as_is"
-
-    # Indel markers get a separate label (kept for tracking; excluded from VCF)
-    if re.search(r"\[D/I\]|\[I/D\]", snp or ""):
-        decision = "indel_" + decision
-
-    return decision
 
 
 # ── CONSISTENCY CHECK ────────────────────────────────────────────────────────
@@ -212,14 +172,15 @@ def strand_normalize(allele, strand):
 
 # ── FINAL MAP FILE ───────────────────────────────────────────────────────────
 
-def build_final_map(df_final, decisions, assembly, map_path):
+def build_final_map(df_final, assembly, map_path):
     """
     Writes matchingSNPs_binary_consistantMapping.{assembly}_map with columns:
       chr  pos  snpID  SNP_alleles  genomic_alleles  SNP_ref_allele  genomic_ref_allele  decision
 
     SNP_alleles are from the manifest SNP column (e.g. A,G).
     genomic_alleles are the + strand remapped alleles.
-    The allele_usage_decision determines which orientation the SNP alleles correspond to.
+    decision ('as_is' or 'complement') is inferred by matching SNP alleles to genomic alleles —
+    direct match first, then complement match. This replaces the old XOR-based approach.
     """
     col_chr    = f"Chr_{assembly}"
     col_pos    = f"MapInfo_{assembly}"
@@ -232,7 +193,6 @@ def build_final_map(df_final, decisions, assembly, map_path):
 
     for _, row in df_final.iterrows():
         name = row["Name"]
-        decision = decisions.get(name, "")
 
         # Parse SNP alleles from manifest [A/G] format
         m = re.search(r"\[(.+?)/(.+?)\]", row.get("SNP", ""))
@@ -247,48 +207,43 @@ def build_final_map(df_final, decisions, assembly, map_path):
         gref = strand_normalize(raw_ref, strand)
         galt = strand_normalize(raw_alt, strand)
 
-        # Complement of SNP alleles (for 'complement' decisions)
+        # Complement of SNP alleles
         snp_a_comp = complement(snp_a)
         snp_b_comp = complement(snp_b)
 
         chr_  = row[col_chr]
         pos   = row[col_pos]
-        base_decision = decision.replace("indel_", "")
+        is_indel = bool(re.search(r"\[D/I\]|\[I/D\]", row.get("SNP", "") or ""))
 
-        # Match SNP alleles to genomic alleles to determine which is the SNP ref
+        # Infer decision by matching: try as_is first, then complement
         snp_ref = None
-        geno_order = f"{gref},{galt}"
+        decision = None
+        snp_alleles = None
+        geno_alleles = None
 
-        if base_decision == "as_is":
-            if snp_a == gref and snp_b == galt:
-                snp_ref = snp_a
-                snp_alleles = f"{snp_a},{snp_b}"
-                geno_alleles = f"{gref},{galt}"
-            elif snp_b == gref and snp_a == galt:
-                snp_ref = snp_b
-                snp_alleles = f"{snp_a},{snp_b}"
-                geno_alleles = f"{galt},{gref}"
-            else:
-                errors += 1
-                lines.append(f"Error\t{name}\t{decision}\t{snp_a},{snp_b}\t{gref},{galt}")
-                continue
-        elif base_decision == "complement":
-            if snp_a_comp == gref and snp_b_comp == galt:
-                snp_ref = snp_a
-                snp_alleles = f"{snp_a},{snp_b}"
-                geno_alleles = f"{gref},{galt}"
-            elif snp_b_comp == gref and snp_a_comp == galt:
-                snp_ref = snp_b
-                snp_alleles = f"{snp_a},{snp_b}"
-                geno_alleles = f"{galt},{gref}"
-            else:
-                errors += 1
-                lines.append(f"Error\t{name}\t{decision}\t{snp_a},{snp_b}\t{gref},{galt}")
-                continue
+        if snp_a == gref and snp_b == galt:
+            decision, snp_ref = "as_is", snp_a
+            snp_alleles = f"{snp_a},{snp_b}"
+            geno_alleles = f"{gref},{galt}"
+        elif snp_b == gref and snp_a == galt:
+            decision, snp_ref = "as_is", snp_b
+            snp_alleles = f"{snp_a},{snp_b}"
+            geno_alleles = f"{galt},{gref}"
+        elif snp_a_comp == gref and snp_b_comp == galt:
+            decision, snp_ref = "complement", snp_a
+            snp_alleles = f"{snp_a},{snp_b}"
+            geno_alleles = f"{gref},{galt}"
+        elif snp_b_comp == gref and snp_a_comp == galt:
+            decision, snp_ref = "complement", snp_b
+            snp_alleles = f"{snp_a},{snp_b}"
+            geno_alleles = f"{galt},{gref}"
         else:
             errors += 1
-            lines.append(f"Error\t{name}\t{decision}\t{snp_a},{snp_b}\t{gref},{galt}")
+            lines.append(f"Error\t{name}\tno_match\t{snp_a},{snp_b}\t{gref},{galt}")
             continue
+
+        if is_indel:
+            decision = "indel_" + decision
 
         lines.append(
             f"{chr_}\t{pos}\t{name}\t{snp_alleles}\t{geno_alleles}\t{snp_ref}\t{gref}\t{decision}"
@@ -536,17 +491,6 @@ def run_qc(args):
             print(f"[qc] After strand agreement filter: {len(df_coord):,} ({n_removed:,} removed)")
             qc_stats["After strand agreement filter"] = len(df_coord)
 
-    # ── Allele usage decisions ───────────────────────────────────────────────
-    print("[qc] Computing allele usage decisions...")
-    decisions = {}
-    decision_path = os.path.join(out_dir, "allele_usage_decision.txt")
-    with open(decision_path, "w") as f:
-        for _, row in df_coord.iterrows():
-            d = allele_usage_decision(row, col_strand, assembly)
-            decisions[row["Name"]] = d
-            f.write(f"{row['Name']}\t{d}\n")
-    print(f"[qc] Allele decisions written to: {decision_path}")
-
     # ── Generate VCF of all remapped positions ───────────────────────────────
     print("[qc] Generating VCF position template...")
     pos_vcf  = os.path.join(temp_dir, "_pos.vcf")
@@ -747,7 +691,7 @@ def run_qc(args):
     # ── Final map file ───────────────────────────────────────────────────────
     map_path = os.path.join(out_dir, f"matchingSNPs_binary_consistantMapping.{assembly}_map")
     print("[qc] Building final map file...")
-    errors = build_final_map(df_consistent, decisions, assembly, map_path)
+    errors = build_final_map(df_consistent, assembly, map_path)
     if errors:
         print(f"[qc] WARNING: {errors} markers could not be assigned to map file (written as 'Error' lines).")
     else:

@@ -130,7 +130,6 @@ output-dir/
     ├── _matchingSNPs_binary_consistantMapping.vcf Final filtered VCF
     ├── _matchingSNPs.vcf                         VCF after design-conflict filter
     ├── _matchingSNPs_binary.vcf                  VCF after polymorphic-site filter
-    ├── allele_usage_decision.txt                 Per-SNP orientation decision (as_is / complement)
     ├── QC_Report.txt                             Marker counts at each QC filter stage
     └── remap_assessment/                         MAPQ histograms and known-assembly benchmarks
 ```

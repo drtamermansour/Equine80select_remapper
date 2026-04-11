@@ -197,21 +197,14 @@ pytest tests/ -v        # 159 tests (~7 min including integration tests)
 |---|---|
 | `AlleleA_ProbeSeq` | 50 bp probe; `AlleleB_ProbeSeq` is NaN for Infinium II |
 | `TopGenomicSeq` | Genomic context `PREFIX[A/B]SUFFIX`; split into two alignment candidates |
-| `IlmnStrand` | TOP/BOT — used in allele usage XOR logic |
-| `SourceStrand` | TOP/BOT/PLUS/MINUS — used in allele usage XOR logic AND as strand ground truth in benchmark |
+| `IlmnStrand` | TOP/BOT — used in probe strand agreement check (`remap_manifest.py`) |
+| `SourceStrand` | TOP/BOT/PLUS/MINUS — used in probe strand agreement check AND as strand ground truth in benchmark |
 | `RefStrand` | +/- — NOT used by the pipeline; encodes probe design convention, not alignment strand |
 
 ### Infinium chemistry
 - **Infinium II**: `AlleleB_ProbeSeq` is NaN. Variant = base immediately AFTER probe 3' end.
 - **Infinium I**: two probes, both ending AT the SNP. Variant = last base of probe.
 - On the minus strand, the probe's physical 3' end is at the alignment *start* position.
-
-### Allele usage decision (XOR logic)
-```
-flip = (IlmnStrand != SourceStrand) XOR (SourceSeq != TopGenomicSeq) XOR (Strand == '-')
-decision = 'complement' if flip else 'as_is'
-```
-Indel markers get `indel_` prefix; excluded from VCF output.
 
 ---
 
@@ -222,7 +215,7 @@ Indel markers get `indel_` prefix; excluded from VCF output.
 chr  pos  snpID  SNP_alleles  genomic_alleles  SNP_ref_allele  genomic_ref_allele  decision
 ```
 - `genomic_alleles`: forward-strand alleles in the **same order** as `SNP_alleles`
-- `decision`: `as_is` or `complement` (or `indel_*`)
+- `decision`: `as_is` or `complement` (or `indel_*`) — inferred by matching SNP alleles to remapped genomic alleles
 
 ---
 
