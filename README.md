@@ -408,16 +408,20 @@ The genome result is used when available. Agreement between the two methods is r
 
 **`RefAltMethodAgreement_{assembly}` values:**
 
-| Value | Meaning |
-|---|---|
-| `NM_match` | Genome lookup and NM comparison both succeeded and agree |
-| `NM_unmatch` | Both succeeded but disagree — genome result used (flag for QC; inspect for nearby variants) |
-| `NM_tied` | Genome succeeded; NM was tied — genome result used |
-| `NM_N/A` | Genome succeeded; NM comparison not applicable — no TopGenomicSeq alignment was available at the winning locus (includes all `probe_only` markers) |
-| `NM_only` | Genome lookup failed; NM result used |
-| `ambiguous` | Both methods failed — Chr=0 |
+| Value | Context | Meaning |
+|---|---|---|
+| `NM_match` | SNP | Genome lookup and NM comparison both succeeded and agree |
+| `NM_unmatch` | SNP | Both succeeded but disagree — genome result used (flag for QC; inspect for nearby variants) |
+| `NM_tied` | SNP | Genome succeeded; NM was tied — genome result used |
+| `NM_N/A` | SNP | Genome succeeded; NM comparison not applicable — no TopGenomicSeq alignment at the winning locus (includes all `probe_only` markers) |
+| `NM_only` | SNP | Genome lookup failed; NM result used |
+| `NM_validated` | Indel | Deletion Ref sequence confirmed by genome fetch |
+| `NM_mismatch` | Indel | Deletion Ref sequence did not match genome fetch, or genome fetch failed — marker removed by design-conflict filter |
+| `NM_corrected` | Indel | Insertion: NM initially assigned Ref/Alt backwards; genome base confirmed swap |
+| `NM_N/A` | Indel | Insertion ref (`gref=""`) — genome validation not applicable |
+| `ambiguous` | SNP / Indel | Both methods failed (incl. NM tie for indels) — Chr=0 |
 
-For **indels**: `NM_match` = deletion Ref confirmed by genome fetch; `NM_unmatch` = deletion Ref mismatch (marker removed by design-conflict filter); insertion refs always pass (`NM_match`).
+Insertion refs (`gref = ""`) always pass without genome validation. `NM_mismatch` and `NM_unmatch` are distinct: `NM_mismatch` is indel-only and triggers removal; `NM_unmatch` is SNP-only and the marker is kept using the genome result.
 
 **What is NM?** `NM` is the `NM:i:<n>` edit-distance tag written by minimap2 into each SAM record. It counts mismatches and gap opens between the aligned sequence and the reference — it is **not** derived from CIGAR walking. CIGAR walking is used only for coordinate computation.
 

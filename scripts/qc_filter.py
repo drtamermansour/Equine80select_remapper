@@ -166,7 +166,7 @@ def extract_ref_alleles(pos_vcf, ref_fasta, ref_vcf):
 def strand_normalize(allele, strand):
     """Returns the allele on the + (forward) strand."""
     if strand == "-":
-        return complement(allele)
+        return allele.translate(COMPLEMENT)[::-1]
     return allele
 
 

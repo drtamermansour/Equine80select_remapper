@@ -788,7 +788,7 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
       - NM comparison is primary determination.
       - Deletions (len(gref)>=1): genome fetch validates the NM-determined Ref.
       - Insertions (gref=''): genome validation not applicable.
-      - agreement_str: 'NM_validated'|'NM_mismatch'|'NM_tied'|'NM_N/A'|'ambiguous'
+      - agreement_str: 'NM_validated'|'NM_mismatch'|'NM_corrected'|'NM_N/A'|'ambiguous'
 
     winning_allele: 'A', 'B', or None (probe_only)
     winning_ts    : alignment dict or None (probe_only)
@@ -833,7 +833,8 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
         except (ValueError, KeyError):
             return ref_char, alt_char, "NM_mismatch"
 
-        agreement = "NM_validated" if fetched == gref.upper() else "NM_mismatch"
+        gref_fwd = reverse_complement(gref) if strand == "-" else gref
+        agreement = "NM_validated" if fetched == gref_fwd.upper() else "NM_mismatch"
         return ref_char, alt_char, agreement
 
     # ── SNP path ──────────────────────────────────────────────────────────────
