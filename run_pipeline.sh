@@ -20,6 +20,9 @@
 #   -t / --threads       Threads for minimap2 (default: 4)
 #   --mapq-topseq        Min MAPQ for TopGenomicSeq alignments (default: 30)
 #   --mapq-probe         Min MAPQ for probe alignments when >0 (default: 0 = disabled)
+#   --coord-delta        Remove markers where |probe_coord − CIGAR_coord| > N and all topseq_only markers (default: -1 = disabled)
+#   --exclude-indels     Remove all indel markers from outputs (VCF, BIM, map file)
+#   --require-strand-agreement  Remove markers where probe strand disagrees with expected orientation
 #   --keep-temp          Keep intermediate FASTA/SAM files
 #   --resume             Skip step 2 if remapped CSV and SAM files already exist
 #   -h / --help          Show this help message
@@ -60,6 +63,9 @@ OUTPUT_DIR="./output"
 THREADS=4
 MAPQ_TOPSEQ=30
 MAPQ_PROBE=0
+COORD_DELTA=-1
+EXCLUDE_INDELS=""
+REQUIRE_STRAND_AGREEMENT=""
 KEEP_TEMP=""
 RESUME=""
 
@@ -78,6 +84,9 @@ while [[ $# -gt 0 ]]; do
         -t|--threads)       THREADS="$2";     shift 2 ;;
         --mapq-topseq)      MAPQ_TOPSEQ="$2"; shift 2 ;;
         --mapq-probe)       MAPQ_PROBE="$2";  shift 2 ;;
+        --coord-delta)      COORD_DELTA="$2"; shift 2 ;;
+        --exclude-indels)   EXCLUDE_INDELS="--exclude-indels"; shift ;;
+        --require-strand-agreement) REQUIRE_STRAND_AGREEMENT="--require-strand-agreement"; shift ;;
         --keep-temp)        KEEP_TEMP="--keep-temp"; shift ;;
         --resume)           RESUME=1; shift ;;
         -h|--help)          usage ;;
@@ -123,6 +132,7 @@ echo " Output dir:  $OUTPUT_DIR"
 echo " Threads:     $THREADS"
 echo " MAPQ TopSeq: $MAPQ_TOPSEQ"
 echo " MAPQ Probe:  $MAPQ_PROBE (0 = disabled)"
+echo " CoordDelta:  $COORD_DELTA (-1 = disabled)"
 echo "========================================================"
 
 # ── Step 1: Index reference if needed ────────────────────────────────────────
@@ -169,12 +179,15 @@ python "$SCRIPT_DIR/scripts/qc_filter.py" \
     -v  "$VCF_CONTIGS" \
     -a  "$ASSEMBLY" \
     -o  "$QC_DIR" \
-    --mapq-topseq "$MAPQ_TOPSEQ" \
-    --mapq-probe  "$MAPQ_PROBE" \
-    --temp-dir    "$TEMP_DIR" \
-    --prefix      "$PREFIX" \
-    --topseq-sam  "$TOPSEQ_SAM" \
-    --probe-sam   "$PROBE_SAM"
+    --mapq-topseq   "$MAPQ_TOPSEQ" \
+    --mapq-probe    "$MAPQ_PROBE" \
+    --coord-delta   "$COORD_DELTA" \
+    --temp-dir      "$TEMP_DIR" \
+    --prefix        "$PREFIX" \
+    --topseq-sam    "$TOPSEQ_SAM" \
+    --probe-sam     "$PROBE_SAM" \
+    $EXCLUDE_INDELS \
+    $REQUIRE_STRAND_AGREEMENT
 
 # ── Cleanup temp files ────────────────────────────────────────────────────────
 if [[ -z "$KEEP_TEMP" ]]; then

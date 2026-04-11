@@ -101,6 +101,7 @@ bash run_pipeline.sh \
 | `--mapq-probe` | `0` (disabled) | Minimum MAPQ for probe alignments |
 | `--coord-delta` | `-1` (disabled) | Remove markers where `\|probe_coord − CIGAR_coord\| > N` and all markers where `anchor_{assembly} == "topseq_only"` |
 | `--exclude-indels` | off | Remove indel markers from all outputs (VCF, BIM, map file) |
+| `--require-strand-agreement` | off | Remove markers where probe strand disagrees with expected orientation |
 | `--keep-temp` | off | Retain intermediate FASTA/SAM files |
 | `--resume` | off | Skip minimap2 if SAM files already exist |
 
