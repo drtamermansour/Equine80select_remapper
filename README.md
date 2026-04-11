@@ -138,7 +138,7 @@ output-dir/
 
 The remapped CSV adds **21 new columns** to every manifest row. All column names that embed the assembly name use the string passed via `-a` (e.g. `-a equCab3` → `Chr_equCab3`).
 
-#### a. oordinate and position columns
+#### a. Coordinate and position columns
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -152,8 +152,8 @@ The remapped CSV adds **21 new columns** to every manifest row. All column names
 | `CoordDelta_{assembly}` | int | `\|CoordProbe − Coord_TopSeqCIGAR\|`; `−1` if CIGAR coord unavailable (SNP in soft clip, `topseq_only`, or `probe_only`) |
 | `CoordSource_{assembly}` | str | `"probe"` or `"cigar"` — which coordinate is in `MapInfo`; `"N/A"` for unmapped/ambiguous |
 | `RefBaseMatch_{assembly}` | str | `"True"` / `"False"` / `"N/A"` — does the genome reference base at `MapInfo` match `Ref` after normalising `Ref` to the + strand? Computed in `remap_manifest.py` as a diagnostic; `qc_filter.py` repeats strand normalisation independently for its design-conflict filter. |
-| `ProbeStrand_{assembly}` | Alignment strand of the probe: `+`, `−`, or `N/A`. `N/A` for `topseq_only` and unmapped. |
-| `StrandAgreementAsExpected_{assembly}` | Whether the probe's alignment strand matches the orientation expected from `IlmnStrand`: `"True"`, `"False"`, or `"N/A"`. Always `"True"` or `"N/A"` for `topseq_n_probe` markers (strand disagreement is a hard filter in valid-triple construction). `"N/A"` for rescue paths and unmapped. Used by `qc_filter.py --require-strand-agreement`. |
+| `ProbeStrand_{assembly}` | str | Alignment strand of the probe: `+`, `−`, or `N/A`. `N/A` for `topseq_only` and unmapped. |
+| `StrandAgreementAsExpected_{assembly}` | str | Whether the probe's alignment strand matches the orientation expected from `IlmnStrand`: `"True"`, `"False"`, or `"N/A"`. Always `"True"` or `"N/A"` for `topseq_n_probe` markers (strand disagreement is a hard filter in valid-triple construction). `"N/A"` for rescue paths and unmapped. Used by `qc_filter.py --require-strand-agreement`. |
 
 
 #### b. Alignment quality columns
