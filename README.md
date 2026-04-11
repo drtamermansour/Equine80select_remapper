@@ -22,7 +22,7 @@ conda activate remap
 
 ---
 
-## Pre-pipeline: Reference Preparation (Optional)
+## Pre-pipeline: Scaffold Haplotype Exclusion (Optional)
 
 Modern genome assemblies include unplaced scaffolds that are often alternative haplotypes of placed chromosomes. Including them in the reference causes ambiguous multi-mapping, reducing remapping confidence. Three scripts handle scaffold characterisation and exclusion **before** running the main pipeline.
 
@@ -150,7 +150,7 @@ The remapped CSV adds **21 new columns** to every manifest row. All column names
 | `Alt_{assembly}` | str | Alternate allele in the TopGenomicSeq alignment orientation (same convention as `Ref`) |
 | `CoordProbe_{assembly}` | int | Raw probe-derived coordinate before any CIGAR override; `0` for `topseq_only` and unmapped; populated for `probe_only` |
 | `Coord_TopSeqCIGAR_{assembly}` | int | CIGAR-walk coordinate from TopGenomicSeq alignment; `0` if SNP in soft clip, `probe_only`, or unmapped |
-| `CoordDelta_{assembly}` | int | `\|CoordProbe − Coord_TopSeqCIGAR\|`; `−1` if CIGAR coord unavailable (SNP in soft clip, `topseq_only`, or `probe_only`) |
+| `CoordDelta_{assembly}` | float | `\|CoordProbe − Coord_TopSeqCIGAR\|`; `−1` if CIGAR coord unavailable (SNP in soft clip, `topseq_only`, or `probe_only`) |
 | `CoordSource_{assembly}` | str | `"probe"` or `"cigar"` — which coordinate is in `MapInfo`; `"N/A"` for unmapped/ambiguous |
 | `RefBaseMatch_{assembly}` | str | `"True"` / `"False"` / `"N/A"` — does the genome reference base at `MapInfo` match `Ref` after normalising `Ref` to the + strand? Computed in `remap_manifest.py` as a diagnostic; `qc_filter.py` repeats strand normalisation independently for its design-conflict filter. |
 | `ProbeStrand_{assembly}` | str | Alignment strand of the probe: `+`, `−`, or `N/A`. `N/A` for `topseq_only` and unmapped. |
@@ -190,7 +190,7 @@ The remapped CSV adds **21 new columns** to every manifest row. All column names
 | genomic_alleles | + strand alleles matching SNP_alleles order |
 | SNP_ref_allele | The SNP allele corresponding to the reference |
 | genomic_ref_allele | The reference allele on the + strand |
-| allele_usage_decision | `as_is` or `complement` |
+| decision | `as_is` or `complement` |
 
 ---
 
@@ -310,7 +310,7 @@ flowchart TD
 - **Infinium I**: two probes (AlleleA_ProbeSeq and AlleleB_ProbeSeq), both ending at the SNP. Variant = **last base** of probe.
 - **Infinium II**: `AlleleB_ProbeSeq` is NaN. Variant = base immediately **after** probe 3′ end.
 - On the minus strand, the probe's physical 3′ end maps to the alignment **start** position.
-- **TopGenomicSeq**: the genomic sequence surrounding the variant position. It has extra IUPAC characters compared to 'SourceSeq' to match the reference genome without indels
+- **TopGenomicSeq**: The genomic sequence surrounding the variant position. It may contain insertions of IUPAC ambiguity characters compared to `SourceSeq` to better match the reference genome.
 
 
 ### Dual-Alignment Strategy
@@ -364,6 +364,7 @@ When no valid triple exists, two sequential rescue strategies are attempted:
 | `probe_only` | No TopSeq alignment; probe CIGAR walk used (`CoordSource=probe`, `MAPQ_TopGenomicSeq=NaN`, `CoordDelta=−1`) |
 | `N/A` | Chr=0; no reliable genome position assigned |
 
+> Empirical accuracy was calculated by benchmarking aganist Equine80select v2 manifest, see benchmark_compare.py
 
 For `topseq_n_probe` markers, two independent coordinates are computed and compared:
 
@@ -397,7 +398,7 @@ The genome result is used when available. Agreement between the two methods is r
 | `NM_match` | Genome lookup and NM comparison both succeeded and agree |
 | `NM_unmatch` | Both succeeded but disagree — genome result used (flag for QC; inspect for nearby variants) |
 | `NM_tied` | Genome succeeded; NM was tied — genome result used |
-| `NM_N/A` | Genome succeeded; NM not applicable (`probe_only` marker) |
+| `NM_N/A` | Genome succeeded; NM comparison not applicable — no TopGenomicSeq alignment was available at the winning locus (includes all `probe_only` markers) |
 | `NM_only` | Genome lookup failed; NM result used |
 | `ambiguous` | Both methods failed — Chr=0 |
 
