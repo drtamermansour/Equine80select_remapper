@@ -885,6 +885,7 @@ class DecisionCounters:
     final_probe_only:            int = 0
     final_probe_rescue_ambiguous: int = 0
     probe_rescue_unmapped:        int = 0    # probe rescue failed → unmapped
+    topseq_ambiguous_no_probe_rescue: int = 0  # topseq ambiguous → skipped probe rescue
     # tie-resolution breakdown for successful rescues
     topseq_rescue_tie_unique:    int = 0
     topseq_rescue_tie_as:        int = 0
@@ -975,8 +976,9 @@ class DecisionCounters:
         row("\u2502  tie=NM_resolved:",       self.topseq_rescue_tie_nm,       indent=3)
         row("\u2502  tie=scaffold_resolved:", self.topseq_rescue_tie_scaffold,  indent=3)
         row("\u251c\u2500 failed \u2014 soft-clipped region \u2192 unmapped:", self.topseq_rescue_failed_softclip, indent=2)
-        row("\u2514\u2500 failed \u2014 NM tie unresolvable \u2192 unmapped:", self.topseq_rescue_failed_refalt, indent=2)
-        lines.append("    Probe rescue (topseq absent/ambiguous):")
+        row("\u2514\u2500 failed \u2014 NM tie unresolvable \u2192 ambiguous:", self.topseq_rescue_failed_refalt, indent=2)
+        row("\u2514\u2500 topseq ambiguous \u2192 ambiguous (no probe rescue):", self.topseq_ambiguous_no_probe_rescue, indent=2)
+        lines.append("    Probe rescue (topseq absent — no alignments):")
         row("\u251c\u2500 successful \u2192 probe_only:", self.final_probe_only, indent=2)
         row("\u2502  tie=unique:",            self.probe_rescue_tie_unique,    indent=3)
         row("\u2502  tie=AS_resolved:",       self.probe_rescue_tie_as,        indent=3)
@@ -1298,10 +1300,10 @@ def run_remapping(args):
                         fasta, best_ts["Chr"], cigar_coord, best_ts["Strand"]
                     )
                     if ref_alt_result[0] is None:
-                        _append_unmapped_cols("N/A", "N/A")
+                        _append_unmapped_cols("N/A", "ambiguous")
                         new_cols[col_align_status][-1] = align_status
                         counters.topseq_rescue_failed_refalt += 1
-                        counters.final_unmapped += 1
+                        counters.final_ambiguous += 1
                         continue
 
                     ref_char, alt_char, refalt_agree = ref_alt_result
@@ -1350,7 +1352,15 @@ def run_remapping(args):
                     continue
 
                 else:
-                    # Try probe-only rescue
+                    # If TopSeq aligned but was ambiguous, probe cannot do better
+                    if best_ts is not None:
+                        _append_unmapped_cols("N/A", "ambiguous")
+                        new_cols[col_align_status][-1] = align_status
+                        counters.topseq_ambiguous_no_probe_rescue += 1
+                        counters.final_ambiguous += 1
+                        continue
+
+                    # TopSeq produced no alignments — try probe-only rescue
                     best_pb, pb_tie = best_probe_rescue(pb_aligns)
 
                     if best_pb is None:
