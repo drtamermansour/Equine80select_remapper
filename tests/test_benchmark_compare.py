@@ -441,7 +441,7 @@ def test_integration_runs_without_error(tmp_path, results_dir):
         [
             "python", "scripts/benchmark_compare.py",
             "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
-            "--remapped",   os.path.join(results_dir,
+            "--remapped",   os.path.join(results_dir, "remapping",
                             "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv"),
             "--assembly",   "equCab3",
             "--output-dir", str(tmp_path),
@@ -466,7 +466,7 @@ def test_integration_correct_count(tmp_path, results_dir):
         [
             "python", "scripts/benchmark_compare.py",
             "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
-            "--remapped",   os.path.join(results_dir,
+            "--remapped",   os.path.join(results_dir, "remapping",
                             "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv"),
             "--assembly",   "equCab3",
             "--output-dir", str(tmp_path),
@@ -506,7 +506,7 @@ def test_integration_baseline_produces_diff_file(tmp_path, results_dir):
     """When --baseline is provided, a _diff.txt file is created alongside the report."""
     run1 = tmp_path / "run1"
     run1.mkdir()
-    remapped_csv = os.path.join(results_dir,
+    remapped_csv = os.path.join(results_dir, "remapping",
                    "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv")
     # First run — produces baseline TSV
     subprocess.run(

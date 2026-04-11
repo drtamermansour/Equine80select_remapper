@@ -867,95 +867,177 @@ class DecisionCounters:
     a structured summary table on completion.
     """
     total_loaded:            int = 0
-    topseq_both:             int = 0
-    topseq_one:              int = 0
-    topseq_neither:          int = 0
-    valid_pair_found:        int = 0
-    no_valid_pair:           int = 0
-    unique_position:         int = 0
-    scaffold_resolved:       int = 0
-    nm_position_resolved:    int = 0
-    position_ambiguous:      int = 0
-    ref_alt_clear:           int = 0
-    ref_alt_ref_resolved:    int = 0
-    ref_alt_nm_tie:          int = 0
-    mapq_60:                 int = 0
-    mapq_30_59:              int = 0
-    mapq_1_29:               int = 0
-    mapq_0:                  int = 0
-    final_mapped:            int = 0
-    final_ref_resolved:      int = 0
-    final_scaffold_resolved:      int = 0
-    final_nm_position_resolved:   int = 0
-    final_unmapped:               int = 0
-    final_ambiguous:         int = 0
-    final_topseq_only:            int = 0
-    topseq_rescue_failed_softclip: int = 0   # SNP target in soft-clipped region
-    topseq_rescue_failed_refalt:   int = 0   # NM tie unresolvable by ref lookup
-    ref_base_mismatch:             int = 0
-    strand_agreement_unexpected:   int = 0   # StrandAgreementAsExpected == False
-    # anchor path counters
-    final_probe_only:            int = 0
-    final_probe_rescue_ambiguous: int = 0
-    # alignment group counters
+    # alignment group counters (raw, before any filtering)
     align_gp1: int = 0
     align_gp2: int = 0
     align_gp3: int = 0
     align_gp4: int = 0
     align_gp5: int = 0
+    align_unmapped: int = 0   # nothing aligned — exits before rescue logic
+    # valid triple filtering
+    valid_pair_found:        int = 0
+    no_valid_pair:           int = 0
+    # no-valid-triple: TopSeq rescue path
+    final_topseq_only:            int = 0
+    topseq_rescue_failed_softclip: int = 0   # SNP target in soft-clipped region
+    topseq_rescue_failed_refalt:   int = 0   # NM tie unresolvable by ref lookup
+    # no-valid-triple: probe rescue path
+    final_probe_only:            int = 0
+    final_probe_rescue_ambiguous: int = 0
+    probe_rescue_unmapped:        int = 0    # probe rescue failed → unmapped
+    # tie-resolution breakdown for successful rescues
+    topseq_rescue_tie_unique:    int = 0
+    topseq_rescue_tie_as:        int = 0
+    topseq_rescue_tie_das:       int = 0
+    topseq_rescue_tie_nm:        int = 0
+    topseq_rescue_tie_scaffold:  int = 0
+    probe_rescue_tie_unique:     int = 0
+    probe_rescue_tie_as:         int = 0
+    probe_rescue_tie_das:        int = 0
+    probe_rescue_tie_nm:         int = 0
+    probe_rescue_tie_scaffold:   int = 0
+    # position resolution
+    unique_position:         int = 0
+    scaffold_resolved:       int = 0
+    nm_position_resolved:    int = 0
+    position_ambiguous:      int = 0
+    # ref/alt determination
+    ref_alt_ref_resolved:    int = 0
+    ref_alt_nm_tie:          int = 0
+    ref_base_mismatch:       int = 0
+    strand_agreement_unexpected: int = 0   # StrandAgreementAsExpected == False
+    # MAPQ distribution (topseq_n_probe winners only)
+    mapq_60:                 int = 0
+    mapq_30_59:              int = 0
+    mapq_1_29:               int = 0
+    mapq_0:                  int = 0
+    # CoordDelta distribution (topseq_n_probe winners only)
+    coord_delta_0:           int = 0   # probe == cigar exactly
+    coord_delta_1:           int = 0   # small discrepancy → probe used
+    coord_delta_ge2:         int = 0   # large discrepancy (≥2 bp) → cigar used
+    coord_delta_neg1:        int = 0   # CIGAR unavailable (SNP in soft clip)
+    # CoordSource breakdown (topseq_n_probe winners only)
+    coord_source_probe:      int = 0   # MapInfo = probe coord
+    coord_source_cigar:      int = 0   # MapInfo = cigar coord (CoordDelta≥2 or indel)
+    # final outcome counts
+    final_mapped:            int = 0
+    final_scaffold_resolved:      int = 0
+    final_nm_position_resolved:   int = 0
+    final_unmapped:               int = 0
+    final_ambiguous:              int = 0
 
     def format_summary(self) -> str:
-        W = 55
+        W = 60
+        SEP = "\u2500" * W
         lines = []
 
-        def row(label, n):
-            lines.append(f"  {label:<{W - 2}} {n:>8,}")
+        def row(label, n, indent=0):
+            pad = "  " * indent
+            lines.append(f"{pad}  {label:<{W - 2 - len(pad)}} {n:>8,}")
+
+        def hdr(title):
+            lines.append(f"\u2500\u2500 {title} {SEP[len(title) + 4:]}")
+
+        # ── derived totals ────────────────────────────────────────────────────
+        mapq_total          = self.mapq_60 + self.mapq_30_59 + self.mapq_1_29 + self.mapq_0
+        topseq_n_probe_total = (self.final_mapped + self.final_scaffold_resolved
+                                + self.final_nm_position_resolved)
+        pos_resolved_total  = (self.unique_position + self.scaffold_resolved
+                               + self.nm_position_resolved)
+        total_check         = (topseq_n_probe_total + self.final_topseq_only
+                               + self.final_probe_only + self.final_ambiguous
+                               + self.final_unmapped)
 
         lines.append("")
         lines.append("=== REMAPPING DECISION SUMMARY ===")
         lines.append(f"  {'Total markers loaded:':<{W - 2}} {self.total_loaded:>8,}")
         lines.append("")
-        lines.append("Pair filtering (chr + strand + overlap):")
-        row("\u22651 valid pair:", self.valid_pair_found)
-        row("No valid pair (total):", self.no_valid_pair)
-        row("  \u251c rescued via TopSeq CIGAR (topseq_only):", self.final_topseq_only)
-        row("  \u251c rescue failed \u2014 SNP in soft-clipped region:", self.topseq_rescue_failed_softclip)
-        row("  \u2514 rescue failed \u2014 NM tie unresolvable:", self.topseq_rescue_failed_refalt)
+
+        # Step 1
+        hdr("Step 1: Alignment Status (before filtering)")
+        row("gp1 \u2013 both TopSeq alleles + probe:",   self.align_gp1)
+        row("gp2 \u2013 one TopSeq allele  + probe:",    self.align_gp2)
+        row("gp3 \u2013 both TopSeq alleles, no probe:", self.align_gp3)
+        row("gp4 \u2013 one TopSeq allele, no probe:",   self.align_gp4)
+        row("gp5 \u2013 probe only (no TopSeq):",        self.align_gp5)
+        row("unmapped (nothing aligned):",               self.align_unmapped)
         lines.append("")
-        lines.append("Position resolution:")
-        row("Unique best pair:", self.unique_position)
+
+        # Step 2
+        hdr("Step 2: Valid Triple Filtering (chr + strand + overlap)")
+        row("\u22651 valid triple:", self.valid_pair_found)
+        row("No valid triple (total):", self.no_valid_pair)
+        lines.append("    TopSeq rescue (topseq has a usable alignment):")
+        row("\u251c\u2500 successful \u2192 topseq_only:", self.final_topseq_only, indent=2)
+        row("\u2502  tie=unique:",            self.topseq_rescue_tie_unique,   indent=3)
+        row("\u2502  tie=AS_resolved:",       self.topseq_rescue_tie_as,       indent=3)
+        row("\u2502  tie=dAS_resolved:",      self.topseq_rescue_tie_das,      indent=3)
+        row("\u2502  tie=NM_resolved:",       self.topseq_rescue_tie_nm,       indent=3)
+        row("\u2502  tie=scaffold_resolved:", self.topseq_rescue_tie_scaffold,  indent=3)
+        row("\u251c\u2500 failed \u2014 soft-clipped region \u2192 unmapped:", self.topseq_rescue_failed_softclip, indent=2)
+        row("\u2514\u2500 failed \u2014 NM tie unresolvable \u2192 unmapped:", self.topseq_rescue_failed_refalt, indent=2)
+        lines.append("    Probe rescue (topseq absent/ambiguous):")
+        row("\u251c\u2500 successful \u2192 probe_only:", self.final_probe_only, indent=2)
+        row("\u2502  tie=unique:",            self.probe_rescue_tie_unique,    indent=3)
+        row("\u2502  tie=AS_resolved:",       self.probe_rescue_tie_as,        indent=3)
+        row("\u2502  tie=dAS_resolved:",      self.probe_rescue_tie_das,       indent=3)
+        row("\u2502  tie=NM_resolved:",       self.probe_rescue_tie_nm,        indent=3)
+        row("\u2502  tie=scaffold_resolved:", self.probe_rescue_tie_scaffold,   indent=3)
+        row("\u251c\u2500 \u2192 ambiguous:", self.final_probe_rescue_ambiguous, indent=2)
+        row("\u2514\u2500 \u2192 unmapped:", self.probe_rescue_unmapped, indent=2)
+        lines.append("")
+
+        # Step 3
+        hdr(f"Step 3: Position Resolution (of {self.valid_pair_found:,} markers with \u22651 valid triple)")
+        row("Unique best triple:", self.unique_position)
         row("Scaffold\u2192chromosome tiebreak resolved:", self.scaffold_resolved)
         row("NM position-resolved (nm_position_resolved_markers.csv):", self.nm_position_resolved)
         row("True tie \u2192 ambiguous:", self.position_ambiguous)
         lines.append("")
-        lines.append("Ref/Alt (NM comparison):")
+
+        # Step 4
+        hdr(f"Step 4: Ref/Alt Determination (of {pos_resolved_total:,} position-resolved markers)")
         row("NM tie resolved by ref lookup:", self.ref_alt_ref_resolved)
         row("NM tie \u2192 ambiguous (triallelic):", self.ref_alt_nm_tie)
-        row("Genome ref base mismatches (see RefBaseMatch col):", self.ref_base_mismatch)
+        row("Genome ref base mismatches (RefBaseMatch column):", self.ref_base_mismatch)
         row("Strand agreement unexpected (StrandAgreementAsExpected=False):", self.strand_agreement_unexpected)
         lines.append("")
-        lines.append("MAPQ distribution (min of winning pair):")
-        row("MAPQ = 60:", self.mapq_60)
-        row("MAPQ 30\u201359:", self.mapq_30_59)
-        row("MAPQ  1\u201329:", self.mapq_1_29)
-        row("MAPQ = 0:", self.mapq_0)
+
+        # Diagnostics
+        coord_diag_total = (self.coord_delta_0 + self.coord_delta_1
+                            + self.coord_delta_ge2 + self.coord_delta_neg1)
+
+        hdr(f"Diagnostics (of {mapq_total:,} topseq+probe mapped markers)")
         lines.append("")
-        lines.append("Final (all in main output):")
-        row("mapped:", self.final_mapped)
-        row("nm-position-resolved:", self.final_nm_position_resolved)
-        row("scaffold-resolved (scaffold_resolved_markers.csv):", self.final_scaffold_resolved)
-        row("topseq-only (CIGAR rescue, no probe):", self.final_topseq_only)
-        row("probe_only markers rescued:",       self.final_probe_only)
-        row("probe_only rescue → ambiguous:",    self.final_probe_rescue_ambiguous)
+        lines.append("  MAPQ Distribution (min of winning TopSeq+probe pair):")
+        row("MAPQ = 60:",   self.mapq_60,    indent=1)
+        row("MAPQ 30\u201359:", self.mapq_30_59, indent=1)
+        row("MAPQ  1\u201329:", self.mapq_1_29,  indent=1)
+        row("MAPQ = 0:",    self.mapq_0,     indent=1)
         lines.append("")
-        lines.append("Alignment groups:")
-        row("gp1 (both TopSeq + probe):",  self.align_gp1)
-        row("gp2 (one TopSeq + probe):",   self.align_gp2)
-        row("gp3 (both TopSeq, no probe):", self.align_gp3)
-        row("gp4 (one TopSeq, no probe):",  self.align_gp4)
-        row("gp5 (probe only):",           self.align_gp5)
-        row("unmapped  (Chr=0):", self.final_unmapped)
-        row("ambiguous (Chr=0 + ambiguous_markers.csv):", self.final_ambiguous)
+        lines.append(f"  CoordDelta Distribution (of {coord_diag_total:,} markers):")
+        row("CoordDelta = 0    (probe = cigar):",              self.coord_delta_0,    indent=1)
+        row("CoordDelta = 1    (small diff \u2192 probe used):",   self.coord_delta_1,    indent=1)
+        row("CoordDelta \u2265 2    (large diff \u2192 cigar used):",   self.coord_delta_ge2,  indent=1)
+        row("CoordDelta = \u22121   (SNP in soft clip, no cigar):", self.coord_delta_neg1, indent=1)
+        lines.append("")
+        lines.append("  CoordSource Breakdown:")
+        row("probe  (MapInfo = probe coord):", self.coord_source_probe, indent=1)
+        row("cigar  (MapInfo = cigar coord):", self.coord_source_cigar, indent=1)
+        lines.append("")
+
+        # Final
+        lines.append("\u2550" * W)
+        lines.append(f"Final Output (all {self.total_loaded:,} markers):")
+        row("topseq+probe (anchor=topseq_n_probe):", topseq_n_probe_total)
+        row("of which scaffold-resolved (scaffold_resolved_markers.csv):", self.final_scaffold_resolved, indent=1)
+        row("of which nm-position-resolved:", self.final_nm_position_resolved, indent=1)
+        row("topseq-only  (CIGAR rescue, no probe):", self.final_topseq_only)
+        row("probe-only   (no valid triple):", self.final_probe_only)
+        row("ambiguous    (Chr=0, ambiguous_markers.csv):", self.final_ambiguous)
+        row("unmapped     (Chr=0):", self.final_unmapped)
+        lines.append("  " + "\u2500" * (W - 2))
+        lines.append(f"  {'Total:':<{W - 2}} {total_check:>8,}")
         lines.append("")
         return "\n".join(lines)
 
@@ -1145,6 +1227,7 @@ def run_remapping(args):
             if not info or align_status == "unmapped":
                 _append_unmapped_cols("N/A", "N/A")
                 new_cols[col_align_status][-1] = align_status
+                counters.align_unmapped += 1
                 counters.final_unmapped += 1
                 continue
 
@@ -1259,6 +1342,11 @@ def run_remapping(args):
                     new_cols[col_tie].append(ts_tie)
                     new_cols[col_refalt_agree].append(refalt_agree)
                     counters.final_topseq_only += 1
+                    if ts_tie == "unique":              counters.topseq_rescue_tie_unique   += 1
+                    elif ts_tie == "AS_resolved":       counters.topseq_rescue_tie_as       += 1
+                    elif ts_tie == "dAS_resolved":      counters.topseq_rescue_tie_das      += 1
+                    elif ts_tie == "NM_resolved":       counters.topseq_rescue_tie_nm       += 1
+                    elif ts_tie == "scaffold_resolved": counters.topseq_rescue_tie_scaffold += 1
                     continue
 
                 else:
@@ -1268,6 +1356,7 @@ def run_remapping(args):
                     if best_pb is None:
                         _append_unmapped_cols("N/A", pb_tie if pb_tie else "N/A")
                         new_cols[col_align_status][-1] = align_status
+                        counters.probe_rescue_unmapped += 1
                         counters.final_unmapped += 1
                         continue
 
@@ -1289,6 +1378,7 @@ def run_remapping(args):
                     if ref_alt_result[0] is None:
                         _append_unmapped_cols("N/A", "N/A")
                         new_cols[col_align_status][-1] = align_status
+                        counters.probe_rescue_unmapped += 1
                         counters.final_unmapped += 1
                         continue
 
@@ -1316,6 +1406,11 @@ def run_remapping(args):
                     new_cols[col_tie].append(pb_tie)
                     new_cols[col_refalt_agree].append(refalt_agree)
                     counters.final_probe_only += 1
+                    if pb_tie == "unique":              counters.probe_rescue_tie_unique   += 1
+                    elif pb_tie == "AS_resolved":       counters.probe_rescue_tie_as       += 1
+                    elif pb_tie == "dAS_resolved":      counters.probe_rescue_tie_das      += 1
+                    elif pb_tie == "NM_resolved":       counters.probe_rescue_tie_nm       += 1
+                    elif pb_tie == "scaffold_resolved": counters.probe_rescue_tie_scaffold += 1
                     continue
 
             # ── Winner path (topseq_n_probe) ─────────────────────────────────
@@ -1335,15 +1430,25 @@ def run_remapping(args):
                 coord_delta_val = -1
                 final_pos       = c_pos
                 coord_source    = "probe"
+                counters.coord_delta_neg1 += 1
+                counters.coord_source_probe += 1
             else:
                 coord_delta_val = abs(c_pos - cigar_coord)
                 cigar_out       = cigar_coord
+                if coord_delta_val == 0:
+                    counters.coord_delta_0 += 1
+                elif coord_delta_val == 1:
+                    counters.coord_delta_1 += 1
+                else:
+                    counters.coord_delta_ge2 += 1
                 if is_indel or coord_delta_val >= 2:
                     final_pos    = cigar_coord
                     coord_source = "cigar"
+                    counters.coord_source_cigar += 1
                 else:
                     final_pos    = c_pos
                     coord_source = "probe"
+                    counters.coord_source_probe += 1
 
             # Ref/Alt determination (uses final_pos = MapInfo)
             ref_alt_result = determine_ref_alt_v2(

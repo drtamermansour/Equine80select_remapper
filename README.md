@@ -134,47 +134,82 @@ output-dir/
     └── remap_assessment/                         MAPQ histograms and known-assembly benchmarks
 ```
 
-### Remapped CSV Quality Columns
+### Remapped CSV Columns
 
-The remapped CSV includes 14 new columns beyond the manifest fields:
+The remapped CSV adds **17 new columns** to every manifest row. All column names that embed the assembly name use the string passed via `-a` (e.g. `-a equCab3` → `Chr_equCab3`).
 
-| Column | Description |
+#### Coordinate and position columns
+
+| Column | Type | Meaning |
+|---|---|---|
+| `Chr_{assembly}` | str | Chromosome (`"0"` = unmapped or ambiguous) |
+| `MapInfo_{assembly}` | int | **Final chosen 1-based position** — probe-derived if `CoordDelta < 2`, CIGAR-derived if `CoordDelta ≥ 2` or indel |
+| `Strand_{assembly}` | str | `+`, `−`, or `N/A` — TopGenomicSeq alignment strand |
+| `Ref_{assembly}` | str | Reference allele in alignment strand (NOT + strand; qc_filter.py normalises for VCF) |
+| `Alt_{assembly}` | str | Alternate allele in alignment strand |
+| `CoordProbe_{assembly}` | int | Raw probe-derived coordinate before any CIGAR override; `0` for `topseq_only` and unmapped; populated for `probe_only` |
+| `Coord_TopSeqCIGAR_{assembly}` | int | CIGAR-walk coordinate from TopGenomicSeq alignment; `0` if SNP in soft clip, `probe_only`, or unmapped |
+| `CoordDelta_{assembly}` | int | `\|CoordProbe − Coord_TopSeqCIGAR\|`; `−1` if CIGAR coord unavailable (SNP in soft clip, `topseq_only`, or `probe_only`) |
+| `CoordSource_{assembly}` | str | `"probe"` or `"cigar"` — which coordinate is in `MapInfo`; `"N/A"` for unmapped/ambiguous |
+| `RefBaseMatch_{assembly}` | str | `"True"` / `"False"` / `"N/A"` — does genome ref base at `MapInfo` match `Ref` after strand normalisation? |
+
+#### Alignment quality columns
+
+| Column | Type | Meaning |
+|---|---|---|
+| `MAPQ_TopGenomicSeq` | int | MAPQ of winning TopSeq alignment; `NaN` for `probe_only` markers (no TopSeq alignment) |
+| `MAPQ_Probe` | int | MAPQ of winning probe alignment; `NaN` for `topseq_only` markers (no probe alignment) |
+| `DeltaScore_TopGenomicSeq` | int | AS gap between 1st and 2nd-best TopSeq alignments; `−1` if fewer than 2 alignments |
+| `QueryCov_TopGenomicSeq` | float | Fraction of TopSeq query in M/=/X aligned ops (excludes soft/hard clips); `0.0` for unmapped |
+| `SoftClipFrac_TopGenomicSeq` | float | Fraction of TopSeq query that is soft-clipped; `0.0` for unmapped |
+
+#### Decision columns
+
+| Column | Values |
 |---|---|
-| `Chr_{assembly}` | Chromosome (`"0"` = unmapped/ambiguous) |
-| `MapInfo_{assembly}` | **Final 1-based position** (probe-derived or CIGAR-derived; see CoordSource) |
-| `Strand_{assembly}` | TopGenomicSeq alignment strand (`+`, `−`, `N/A`) |
-| `Ref_{assembly}` / `Alt_{assembly}` | Alleles in alignment strand (strand-normalised by qc_filter.py) |
-| `MAPQ_TopGenomicSeq` / `MAPQ_Probe` | Alignment MAPQ scores; MAPQ_Probe=NaN for `topseq_only` markers (no probe alignment); populated normally for `probe_only` |
-| `DeltaScore_TopGenomicSeq` | AS gap between best and 2nd-best TopSeq alignments; −1 = uniquely placed |
-| `QueryCov_TopGenomicSeq` | Fraction of TopSeq query in aligned (M/=/X) ops |
-| `SoftClipFrac_TopGenomicSeq` | Fraction of TopSeq query that is soft-clipped |
-| `CoordProbe_{assembly}` | Raw probe-derived coordinate (before any CIGAR override) |
-| `Coord_TopSeqCIGAR_{assembly}` | Coordinate from TopSeq CIGAR walk; 0 if SNP target in soft clip |
-| `CoordDelta_{assembly}` | `\|CoordProbe − Coord_TopSeqCIGAR\|`; −1 if CIGAR unavailable |
-| `CoordSource_{assembly}` | `"probe"` or `"cigar"` — which coordinate is in MapInfo |
-| `RefBaseMatch_{assembly}` | Does genome ref base at MapInfo match Ref after strand normalisation? |
+| `AlignmentStatus_{assembly}` | `gp1` (both TopSeq alleles + probe), `gp2` (one TopSeq + probe), `gp3` (both TopSeq, no probe), `gp4` (one TopSeq, no probe), `gp5` (probe only, no TopSeq), `unmapped`. Computed before any filtering. |
+| `anchor_{assembly}` | `topseq_n_probe`, `topseq_only`, `probe_only`, `N/A` — which source(s) determined the final coordinate (see Confidence Tiers below) |
+| `tie_{assembly}` | `unique`, `AS_resolved`, `dAS_resolved`, `NM_resolved`, `CoordDelta_resolved`, `scaffold_resolved`, `ambiguous`, `N/A` — how a multi-locus tie was resolved |
+| `RefAltMethodAgreement_{assembly}` | Agreement between genome ref lookup and NM-based Ref/Alt (see values below) |
 
-### New columns (v2 algorithm)
+**`anchor_{assembly}` values and confidence tiers:**
 
-| Column | Meaning |
+| Value | Coordinate evidence | Tier |
+|---|---|---|
+| `topseq_n_probe` | Probe + TopSeq overlap confirmed; CIGAR cross-check applied | **1** — 98.7% empirical accuracy |
+| `topseq_only` | No valid triple; TopSeq CIGAR walk used (`CoordSource=cigar`, `MAPQ_Probe=NaN`, `CoordDelta=−1`) | **2** — 72.9% empirical accuracy |
+| `probe_only` | No TopSeq alignment; probe CIGAR walk used (`CoordSource=probe`, `MAPQ_TopGenomicSeq=NaN`, `CoordDelta=−1`) | **2** |
+| `N/A` | Chr=0; no reliable genome position assigned | **5** |
+
+**`tie_{assembly}` values:**
+
+| Value | Meaning |
 |---|---|
-| `AlignmentStatus_{assembly}` | Diagnostic census of which alignment sources had hits: `gp1` (both TopSeq alleles + probe), `gp2` (one TopSeq + probe), `gp3` (both TopSeq, no probe), `gp4` (one TopSeq, no probe), `gp5` (probe only), `unmapped`. Computed before any filtering. |
-| `anchor_{assembly}` | Which source(s) determined the final coordinate: `topseq_n_probe`, `topseq_only`, `probe_only`, or `N/A` (unmapped/ambiguous). |
-| `tie_{assembly}` | How a multi-locus tie was resolved: `unique`, `AS_resolved`, `dAS_resolved`, `NM_resolved`, `CoordDelta_resolved`, `scaffold_resolved`, `ambiguous`, or `N/A`. |
-| `RefAltMethodAgreement_{assembly}` | For SNPs: relationship between genome-lookup and NM-based Ref/Alt calls. For indels: whether deletion Ref was confirmed by a genome fetch. See values below. |
+| `unique` | Only one locus candidate — no tie to break |
+| `AS_resolved` | Multiple candidates; highest AS_sum was unique |
+| `dAS_resolved` | AS_sum tied; highest ΔAS_sum broke the tie |
+| `NM_resolved` | AS_sum and ΔAS_sum tied; lowest NM_sum broke the tie |
+| `CoordDelta_resolved` | NM_sum also tied; lowest CoordDelta broke the tie (main path only — not used in rescue paths) |
+| `scaffold_resolved` | One candidate on placed chr, rest on scaffolds; placed chr accepted |
+| `ambiguous` | All ranking steps exhausted; Chr=0 |
+| `N/A` | Truly unmapped — no alignment available |
 
-**`RefAltMethodAgreement` values for SNPs:**
+> `topseq_only` and `probe_only` markers carry a `tie_{assembly}` value from their single-alignment ranking (AS → ΔAS → NM → scaffold). `CoordDelta_resolved` never appears in rescue paths because there is no probe–CIGAR cross-validation without a valid triple. The per-tie-value breakdown for both rescue paths is in `remapping_Report.txt`.
+
+**`RefAltMethodAgreement_{assembly}` values:**
 
 | Value | Meaning |
 |---|---|
 | `NM_match` | Genome lookup and NM comparison both succeeded and agree |
-| `NM_unmatch` | Both succeeded but disagree — genome result used (flag for QC) |
+| `NM_unmatch` | Both succeeded but disagree — genome result used (flag for QC; inspect for nearby variants) |
 | `NM_tied` | Genome succeeded; NM was tied — genome result used |
-| `NM_N/A` | Genome succeeded; NM not applicable (probe_only marker) |
+| `NM_N/A` | Genome succeeded; NM not applicable (`probe_only` marker) |
 | `NM_only` | Genome lookup failed; NM result used |
 | `ambiguous` | Both methods failed — Chr=0 |
 
-**What is NM?** `NM` is the `NM:i:<n>` edit-distance tag written by minimap2 into each SAM alignment record. It counts mismatches and gap opens between the aligned sequence and the reference — it is **not** derived from CIGAR walking. CIGAR walking in this pipeline is used only for coordinate computation (`parse_cigar_to_ref_pos`, `get_probe_coordinate`). `NM_match`/`NM_unmatch` markers indicate that the genome and NM methods gave the same/different Ref allele assignment; `NM_unmatch` markers are worth inspecting for nearby variants.
+For **indels**: `NM_match` = deletion Ref confirmed by genome fetch; `NM_unmatch` = deletion Ref mismatch (marker removed by design-conflict filter); insertion refs always pass (`NM_match`).
+
+**What is NM?** `NM` is the `NM:i:<n>` edit-distance tag written by minimap2 into each SAM record. It counts mismatches and gap opens between the aligned sequence and the reference — it is **not** derived from CIGAR walking. CIGAR walking is used only for coordinate computation.
 
 ### Map File Format
 
@@ -193,18 +228,225 @@ The remapped CSV includes 14 new columns beyond the manifest fields:
 
 ---
 
+## Pipeline Decision Tree
+
+The diagram below shows the full per-marker decision flow in `scripts/remap_manifest.py`.
+
+```mermaid
+flowchart TD
+    classDef tier1    fill:#2d6a4f,color:#fff,stroke:#1b4332,stroke-width:2px
+    classDef tier2    fill:#52b788,color:#fff,stroke:#2d6a4f,stroke-width:2px
+    classDef tier5    fill:#e63946,color:#fff,stroke:#c1121f,stroke-width:2px
+    classDef process  fill:#f8f9fa,color:#000,stroke:#adb5bd,stroke-width:1px
+
+    %% ── Input ──────────────────────────────────────────────────────────────
+    INPUT([Illumina Manifest Marker]):::process
+
+    INPUT --> PARSE["extract_candidates\nParse TopGenomicSeq → PREFIX · [A/B] · SUFFIX\nCompute PreLen · PostLen\nDetect assay type I / II\nExpand into TopSeq_A · TopSeq_B sequences"]:::process
+
+    %% ── Alignment ──────────────────────────────────────────────────────────
+    PARSE --> ALIGN["minimap2  -ax sr  -N 5\nTopSeq_A + TopSeq_B  (primary + up to 5 secondary)\nAlleleA_ProbeSeq       (primary + up to 5 secondary)\nAll alignments retained — no strand constraint"]:::process
+
+    %% ── TopSeq alignment check ─────────────────────────────────────────────
+    ALIGN --> TS_CHECK{"TopGenomicSeq\naligned?"}:::process
+
+    TS_CHECK -->|"Neither A nor B\naligned to any locus"| UNM_TS["unmapped\nChr=0 · Strand=N/A\nno alignment available"]:::tier5
+
+    %% ── Valid-triple construction ───────────────────────────────────────────
+    TS_CHECK -->|"≥1 allele aligned"| SBP_BUILD["build_valid_triples + rank_and_resolve\nEnumerate all (TopSeq_allele × TopSeq_align × probe_align) triples\nValidity: TopSeq chr = Probe chr  AND  strand_agreement ∈ {True, N/A}  AND  overlap > 0\nRank: AS_sum → ΔAS_sum → NM_sum → CoordDelta → scaffold → ambiguous\nMAPQ reported as diagnostic only (not used for ranking)"]:::process
+
+    SBP_BUILD --> VALID{"Valid triples\nexist?"}:::process
+
+    %% ── No-valid-triple rescue: TopSeq ─────────────────────────────────────
+    VALID -->|"No valid triples\nTopSeq aligned but probe\nabsent · wrong chr · no overlap"| RESCUE["best_topseq_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · scaffold_resolved · ambiguous"]:::process
+
+    RESCUE --> RESCUE_OUT{"TopSeq rescue\noutcome?"}:::process
+
+    RESCUE_OUT -->|"No TopSeq aligns\nor ambiguous"| PROBE_RESCUE["best_probe_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · scaffold_resolved · ambiguous"]:::process
+
+    RESCUE_OUT -->|"Winner found\n(placed chr)"| CIGAR_SC["parse_cigar_to_ref_pos\nWalk CIGAR from TopSeq alignment\nQuery index = PreLen (+ strand)\nor PostLen (− strand)"]:::process
+
+    CIGAR_SC --> SC_CHECK{"SNP target\nin soft-clipped\nregion?"}:::process
+
+    SC_CHECK -->|"Yes — target index\nfalls in soft clip\nno ref coord derivable"| UNM_SC["unmapped\nChr=0"]:::tier5
+
+    SC_CHECK -->|"No — CIGAR coord\nsuccessfully derived"| RA_RESCUE["determine_ref_alt_v2\nNM comparison + genome ref lookup\nat rescued position"]:::process
+
+    RA_RESCUE --> RA_RESCUE_CHECK{"Ref/Alt\nresolvable?"}:::process
+
+    RA_RESCUE_CHECK -->|"NM tie\nunresolvable"| UNM_RA["unmapped\nChr=0"]:::tier5
+
+    RA_RESCUE_CHECK -->|"Ref/Alt\nassigned"| TSONLY["topseq_only\nCoord = CIGAR coord\nCoordSource = cigar\nCoordDelta = −1\nMAPQ_Probe = NaN\nanchor = topseq_only"]:::tier2
+
+    %% ── No-valid-triple rescue: Probe ───────────────────────────────────────
+    PROBE_RESCUE --> PROBE_OUT{"Probe rescue\noutcome?"}:::process
+
+    PROBE_OUT -->|"No probe\nalignment"| UNM_NO["unmapped\nChr=0"]:::tier5
+
+    PROBE_OUT -->|"Ambiguous"| AMB_PROBE["ambiguous\nChr=0"]:::tier5
+
+    PROBE_OUT -->|"Winner found"| RA_PROBE["determine_ref_alt_v2\nNM comparison + genome ref lookup\nat probe-derived position"]:::process
+
+    RA_PROBE --> PROBEONLY["probe_only\nCoord = probe CIGAR walk\nCoordSource = probe\nMAPQ_TopGenomicSeq = NaN\nanchor = probe_only"]:::tier2
+
+    %% ── Valid-triple resolution ──────────────────────────────────────────────
+    VALID -->|"Valid triples\nexist"| RANK["rank_and_resolve\nRanking waterfall:\nAS_sum → ΔAS_sum → NM_sum → CoordDelta → scaffold\ntie values: unique · AS_resolved · dAS_resolved\n            NM_resolved · CoordDelta_resolved · scaffold_resolved\n(supplementary CSV for scaffold_resolved and NM_resolved)"]:::process
+
+    RANK -->|"Winner resolved"| DRA:::process
+    RANK -->|"All steps exhausted\ntie = ambiguous\ncompeting rows → ambiguous_markers.csv"| AMB1["ambiguous\nChr=0"]:::tier5
+
+    DRA["determine_ref_alt_v2\nGenome ref lookup (primary) + NM comparison (parallel)\nAgreement reported in RefAltMethodAgreement column"]:::process
+
+    DRA --> NM_WIN{"Ref/Alt\nassignable?"}:::process
+
+    NM_WIN -->|"Yes\n(genome lookup or NM resolved)"| PROBE_COORD["get_probe_coordinate\nProbe CIGAR walk · Probe strand · Assay type\nc_pos = 1-based variant position\n(3′ end for Infinium II · last base for Infinium I)\n(minus-strand deletion correction applied)"]:::process
+
+    NM_WIN -->|"Both methods failed\n(triallelic / no genome match)"| AMB2["ambiguous\nChr=0"]:::tier5
+
+    %% ── CIGAR cross-validation and coordinate selection ─────────────────────
+    PROBE_COORD --> CIGAR_XV["parse_cigar_to_ref_pos\nIndependent CIGAR walk on TopSeq alignment\nQuery index = PreLen (+ strand) or PostLen (− strand)\nProduces cigar_coord in parallel with c_pos"]:::process
+
+    CIGAR_XV --> DELTA_CHECK{"CIGAR target\nin soft clip?"}:::process
+
+    DELTA_CHECK -->|"Yes\n(SNP in soft-clipped\nregion of TopSeq)"| USE_PROBE["CoordSource = probe\nCoordDelta = −1\nfinal_pos = c_pos\n(CIGAR unavailable for this marker)"]:::process
+
+    DELTA_CHECK -->|"No\ncigar_coord derived"| DELTA_CALC["CoordDelta = |c_pos − cigar_coord|\nCoordProbe = c_pos  (raw, always stored)\nCoord_TopSeqCIGAR = cigar_coord  (always stored)"]:::process
+
+    DELTA_CALC --> DELTA_THRESH{"CoordDelta\n≥ 2 bp?\nor indel?"}:::process
+
+    DELTA_THRESH -->|"No  (delta = 0 or 1)\nProbe is more reliable\nor both agree"| USE_PROBE2["CoordSource = probe\nfinal_pos = c_pos"]:::process
+
+    DELTA_THRESH -->|"Yes  (delta ≥ 2 bp)\nor indel marker\nCIGAR empirically more accurate"| USE_CIGAR["CoordSource = cigar\nfinal_pos = cigar_coord"]:::process
+
+    USE_PROBE  --> FINAL_COL
+    USE_PROBE2 --> FINAL_COL
+    USE_CIGAR  --> FINAL_COL
+
+    FINAL_COL["MapInfo_{assembly} = final_pos\nRefBaseMatch = genome base vs strand-normalised Ref\nAll diagnostic columns stored in output CSV"]:::process
+
+    FINAL_COL --> PLACED["mapped / scaffold_resolved\nnm_position_resolved / ref_resolved\nTier 1 — Probe-validated"]:::tier1
+
+    TSONLY --> OUTPUT_TSONLY["topseq_only — Tier 2\nNo probe validation"]:::tier2
+
+    PROBEONLY --> OUTPUT_PROBEONLY["probe_only — Tier 2\nNo TopSeq alignment"]:::tier2
+
+    PLACED  --> OUTPUT_END([Output CSV]):::process
+    OUTPUT_TSONLY --> OUTPUT_END
+    OUTPUT_PROBEONLY --> OUTPUT_END
+```
+
+---
+
+## Algorithm Details
+
+### Dual-Alignment Strategy
+
+For each marker, two sequences are aligned to the reference with `minimap2 -ax sr -N 5` (both primary and up to 5 secondary alignments retained):
+
+1. **TopGenomicSeq** — the genomic context `PREFIX[AlleleA/AlleleB]SUFFIX` is split into two candidates (one per allele). The candidate with lower NM at the winning locus is the reference allele.
+2. **Probe** (`AlleleA_ProbeSeq`, 50 bp) — aligned independently. Must map to the same chromosome and overlap the TopSeq alignment window; no strand constraint imposed.
+
+A **valid triple** is a `(TopSeq_allele × TopSeq_align × probe_align)` combination that satisfies:
+- TopSeq chr == Probe chr
+- Strand agreement check (`compute_probe_strand_agreement`) returns `"True"` or `"N/A"`
+- Probe–TopSeq overlap > 0 bp
+
+### Tiebreaking Waterfall (main path — `rank_and_resolve`)
+
+When multiple valid triples point to different loci, they are ranked by this cascade until a unique winner is found:
+
+| Step | Criterion | `tie_{assembly}` label |
+|---|---|---|
+| 1 | All triples at same locus | `unique` |
+| 2 | Highest `AS_sum = ts.AS + pb.AS` | `AS_resolved` |
+| 3 | Highest `ΔAS_sum` (AS gap vs. competing loci) | `dAS_resolved` |
+| 4 | Lowest `NM_sum = ts.NM + pb.NM` | `NM_resolved` |
+| 5 | Lowest `CoordDelta` (probe vs. CIGAR coordinate agreement) | `CoordDelta_resolved` |
+| 6 | Placed chromosome vs. scaffold | `scaffold_resolved` |
+| 7 | All steps exhausted → Chr=0 | `ambiguous` |
+
+> **MAPQ is not used for ranking** in the v2 algorithm. It is reported as a diagnostic column only.
+
+### Rescue Paths (no valid triple)
+
+When no valid triple exists, two sequential rescue strategies are attempted:
+
+**TopSeq-only rescue** (`best_topseq_rescue`): uses the same AS → ΔAS → NM → scaffold ranking applied to individual TopSeq alignments (no CoordDelta step — no probe to cross-validate). If a winner is found, the SNP coordinate is derived from a CIGAR walk on the TopSeq alignment. Fails if the SNP target falls in a soft-clipped region or Ref/Alt is unresolvable. Successful markers receive `anchor=topseq_only`, `CoordDelta=−1`, `MAPQ_Probe=NaN`.
+
+**Probe-only rescue** (`best_probe_rescue`): attempted when TopSeq rescue fails or returns ambiguous. Uses the same AS → ΔAS → NM → scaffold ranking on probe alignments. No strand filtering is applied (expected strand cannot be determined without a TopSeq anchor). Successful markers receive `anchor=probe_only`, `CoordDelta=−1`, `MAPQ_TopGenomicSeq=NaN`.
+
+Per-tie-value counts for both rescue paths are printed in `remapping_Report.txt`.
+
+### Ref/Alt Determination (`determine_ref_alt_v2`)
+
+For each position-resolved marker, two methods run in parallel:
+
+- **Genome lookup** (primary): fetches the reference base at `MapInfo` and compares strand-normalised allele characters against `AlleleA` / `AlleleB`.
+- **NM comparison** (parallel): the allele with lower edit distance (NM) at the winning locus is assigned as Ref.
+
+The genome result is used when available. Agreement between the two methods is recorded in `RefAltMethodAgreement_{assembly}`. `NM_unmatch` markers (methods disagree) are worth inspecting for nearby variants.
+
+### Coordinate Selection Rule
+
+For `topseq_n_probe` markers, two independent coordinates are computed and compared:
+
+| `CoordDelta` | `MapInfo` source | Rationale |
+|---|---|---|
+| `0` | Probe | Identical — either works |
+| `1` | Probe | Small discrepancy; probe more reliable at delta=1 |
+| `≥ 2` | CIGAR | Large discrepancy; CIGAR empirically more accurate (~64–86% vs ~4–17% with probe) |
+| `−1` (soft clip) | Probe | CIGAR unavailable; probe used as-is |
+
+Additionally, **indel markers always use the CIGAR coordinate** regardless of `CoordDelta`, because the probe-based coordinate is less precise for insertions/deletions.
+
+`CoordProbe_{assembly}` always stores the raw probe coordinate before any override, enabling retrospective comparison.
+
+### Confidence Tier Summary
+
+| Tier | `anchor` value | Coordinate evidence | Empirical accuracy |
+|---|---|---|---|
+| **1** | `topseq_n_probe` | Probe + TopSeq overlap confirmed; CIGAR cross-check applied | 98.7% overall |
+| **2** | `topseq_only` | TopSeq CIGAR walk; no probe validation | 72.9% correct |
+| **2** | `probe_only` | Probe CIGAR walk; no TopSeq alignment | — |
+| **5** | `N/A` | Chr=0; no reliable genome position assigned | — |
+
+`CoordDelta` is a continuous within-Tier-1 quality signal; `CoordDelta=0` markers are 99.0% coord-accurate.
+
+### Infinium Chemistry
+
+- **Infinium II**: `AlleleB_ProbeSeq` is NaN. Variant = base immediately **after** probe 3′ end.
+- **Infinium I**: two probes, both ending at the SNP. Variant = **last base** of probe.
+- On the minus strand, the probe's physical 3′ end maps to the alignment **start** position.
+
+### Allele Usage Decision
+
+`as_is` or `complement` via XOR of three conditions:
+
+```
+flip = (IlmnStrand != SourceStrand) XOR (SourceSeq != TopGenomicSeq) XOR (Strand == '-')
+decision = 'complement' if flip else 'as_is'
+```
+
+Indel markers get an `indel_` prefix and are excluded from VCF output.
+
+---
+
 ## QC Filter Cascade
 
 Filters applied sequentially by `qc_filter.py`; `QC_Report.txt` records counts at each stage:
 
-1. **Unmapped** — `Strand == N/A`
-2. **MAPQ** — `MAPQ_TopGenomicSeq < --mapq-topseq`
-3. **CoordDelta** *(optional)* — `CoordDelta > --coord-delta` or `anchor_{assembly} == "topseq_only"`; disabled by default (`--coord-delta -1`)
-4. **Strand agreement** *(optional)* — `StrandAgreementAsExpected == False`; disabled by default (`--require-strand-agreement`)
-5. **Design conflict** — SNPs: strand-normalised Ref ≠ genome ref base at MapInfo; deletions: pysam fetch of ref sequence at MapInfo ≠ gref; insertions: always pass
-6. **Exclude indels** *(optional)* — remove all indel markers; disabled by default (`--exclude-indels`)
-7. **Polymorphic sites** — multiple Ref/Alt assignments at the same Chr:Pos
-8. **Consistency** — probe + TopGenomicSeq SAM record count ≠ 3
+| Stage | Filter condition | Flag |
+|---|---|---|
+| 1. Unmapped | `Strand_{assembly} == N/A` | always on |
+| 2. MAPQ | `MAPQ_TopGenomicSeq < --mapq-topseq` | `--mapq-topseq 30` |
+| 2.5. CoordDelta *(optional)* | `CoordDelta > N` OR `anchor_{assembly} == "topseq_only"` | `--coord-delta N` (N ≥ 0); disabled by default |
+| 3. Strand agreement *(optional)* | `StrandAgreementAsExpected == False` | `--require-strand-agreement`; disabled by default |
+| 4. Design conflict | SNPs: strand-normalised Ref ≠ genome ref base at MapInfo; deletions: pysam fetch of ref ≠ gref; insertions: always pass | always on |
+| 5. Exclude indels *(optional)* | Remove all indel markers | `--exclude-indels`; disabled by default |
+| 6. Polymorphic sites | Multiple Ref/Alt assignments at the same Chr:Pos | always on |
+| 7. Consistency | SAM record count at Chr ≠ 3 (TopSeq_A + TopSeq_B + probe) | requires SAM files |
+
+> The CoordDelta filter explicitly removes `topseq_only` markers (via `anchor_{assembly} == "topseq_only"`) whenever `--coord-delta` is active, because they carry `CoordDelta=−1` and would otherwise numerically pass any threshold ≥ 0.
 
 For Equine80select v2 → EquCab3 (default `--mapq-topseq 30`, no `--coord-delta`):
 
@@ -233,9 +475,7 @@ conda activate remap
 pytest tests/ -v
 ```
 
-Expected: **86 tests** in `tests/test_remap_manifest.py` + **30 tests** in `tests/test_qc_filter.py` + **46 tests** in `tests/test_benchmark_compare.py` (~7 minutes total including integration tests).
-
-The two integration tests in `test_benchmark_compare.py` require real data files in `backup_original/` and `results_E80selv2_to_equCab3/remapping/`.
+Tests are organised in three files: `tests/test_remap_manifest.py`, `tests/test_qc_filter.py`, and `tests/test_benchmark_compare.py`. Run `pytest --collect-only` to see current totals. Integration tests in `test_benchmark_compare.py` require real data and the `--results-dir` flag.
 
 ---
 
@@ -270,35 +510,6 @@ python scripts/benchmark_cigar_vs_probe.py \
 | `benchmark_{ts}.tsv` | Per-marker outcome |
 | `benchmark_{ts}_report.txt` | Summary + accuracy stratified by CoordDelta |
 | `benchmark_{ts}_diff.txt` | Category transitions vs `--baseline` |
-
----
-
-## Pipeline Methodology
-
-### Dual-Alignment Strategy
-
-For each marker, two sequences are aligned to the reference with `minimap2 -ax sr -N 5`:
-
-1. **TopGenomicSeq** — the full genomic context `PREFIX[AlleleA/AlleleB]SUFFIX` is split into two candidates (one per allele). Both primary and secondary alignments (up to 5) are retained. Triples are ranked by AS score, then ΔAS, then NM. The candidate with lower NM at the winning locus is the reference allele.
-
-2. **Probe** (`AlleleA_ProbeSeq`, 50 bp) — aligned independently. Must map to the same chromosome and overlap the TopSeq alignment window. No strand constraint — bottom-strand probes align opposite to TopGenomicSeq and are still valid.
-
-**Coordinate selection:** For each mapped marker, the probe coordinate and the CIGAR-derived coordinate from TopGenomicSeq are both computed. `CoordDelta = |probe_coord − CIGAR_coord|`. If `CoordDelta ≥ 2`, the CIGAR coordinate is used as `MapInfo` (benchmark shows ~85% accuracy vs ~4% with probe at delta>10). Otherwise probe is used.
-
-**TopSeq-only rescue:** When no valid (TopSeq × probe) triple exists but TopSeq aligned, the SNP coordinate is derived directly from the TopGenomicSeq CIGAR walk. These markers receive `anchor_{assembly} = topseq_only` (72.9% empirical accuracy vs ground truth). In v2→EquCab3, 1,336 markers are rescued this way.
-
-### Infinium Chemistry
-
-- **Infinium II**: variant = base immediately after probe 3′ end
-- **Infinium I**: variant = last base of probe
-- On minus strand, the probe's physical 3′ end maps to the alignment start position
-
-### Allele Usage Decision
-
-`as_is` or `complement` via XOR of three conditions:
-- `IlmnStrand != SourceStrand`
-- `SourceSeq != TopGenomicSeq`
-- `Strand_{assembly} == '-'`
 
 ---
 

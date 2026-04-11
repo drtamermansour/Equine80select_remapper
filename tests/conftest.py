@@ -7,8 +7,8 @@ def pytest_addoption(parser):
     parser.addoption(
         "--results-dir",
         default=None,
-        help="Path to the pipeline results directory containing the remapped CSV. "
-             "Required for integration tests (e.g. --results-dir results_E80selv2_to_equCab3).",
+        help="Root path of the pipeline output directory. "
+             "Integration tests search the 'remapping/' and 'qc/' subdirectories automatically.",
     )
 
 
