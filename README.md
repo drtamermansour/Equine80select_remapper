@@ -217,17 +217,20 @@ The diagram below shows the full per-marker decision flow in `scripts/remap_mani
 
 ```mermaid
 flowchart TD
-    classDef topseq_n_probe  fill:#2d6a4f,color:#fff,stroke:#1b4332,stroke-width:2px
-    classDef topseq_only     fill:#52b788,color:#fff,stroke:#2d6a4f,stroke-width:2px
-    classDef probe_only      fill:#52b788,color:#fff,stroke:#2d6a4f,stroke-width:2px
-    classDef unmapped        fill:#e63946,color:#fff,stroke:#c1121f,stroke-width:2px
-    classDef ambiguous       fill:#e63946,color:#fff,stroke:#c1121f,stroke-width:2px
-    classDef process  fill:#f8f9fa,color:#000,stroke:#adb5bd,stroke-width:1px
+    %% Node colours encode coordinate role (background) and Chr=0 (red stroke)
+    classDef topseq_n_probe      fill:#2d6a4f,color:#fff,stroke:#1b4332,stroke-width:2px
+    classDef topseq_only         fill:#52b788,color:#fff,stroke:#2d6a4f,stroke-width:2px
+    classDef probe_only          fill:#74c69d,color:#000,stroke:#2d6a4f,stroke-width:2px
+    classDef unmapped            fill:#e63946,color:#fff,stroke:#c1121f,stroke-width:2px
+    classDef chr0_tnp            fill:#2d6a4f,color:#fff,stroke:#e63946,stroke-width:3px
+    classDef chr0_to             fill:#52b788,color:#fff,stroke:#e63946,stroke-width:3px
+    classDef chr0_po             fill:#74c69d,color:#000,stroke:#e63946,stroke-width:3px
+    classDef process             fill:#f8f9fa,color:#000,stroke:#adb5bd,stroke-width:1px
 
     %% ── Input ──────────────────────────────────────────────────────────────
     INPUT([Illumina Manifest Marker]):::process
 
-    INPUT --> PARSE["extract_candidates\nParse TopGenomicSeq → PREFIX · [A/B] · SUFFIX\nCompute PreLen · PostLen\nDetect assay type I / II\nExpand into TopSeq_A · TopSeq_B sequences"]:::process
+    INPUT --> PARSE["extract_candidates\nParse TopGenomicSeq → PREFIX · [A/B] · SUFFIX\nCompute PreLen · PostLen · Detect assay type I / II\nExpand into TopSeq_A · TopSeq_B sequences"]:::process
 
     %% ── Alignment ──────────────────────────────────────────────────────────
     PARSE --> ALIGN["minimap2  -ax sr  -N 5\nTopSeq_A + TopSeq_B  (primary + up to 5 secondary)\nAlleleA_ProbeSeq       (primary + up to 5 secondary)\nAll alignments retained — no strand constraint"]:::process
@@ -235,10 +238,10 @@ flowchart TD
     %% ── Early unmapped exit (nothing aligned at all) ───────────────────────
     ALIGN --> TS_CHECK{"Any alignment\nfound?\n(align_status)"}:::process
 
-    TS_CHECK -->|"unmapped\n(no TopSeq AND no probe\naligned to any locus)"| UNM_TS["unmapped\nChr=0 · Strand=N/A\nno alignment available"]:::unmapped
+    TS_CHECK -->|"unmapped\n(no TopSeq AND no probe\naligned to any locus)"| UNM_TS["anchor=N/A · tie=N/A · RefAlt=N/A\nChr=0"]:::unmapped
 
     %% ── Valid-triple construction (gp1–gp5 all proceed here) ───────────────
-    TS_CHECK -->|"gp1–gp5\n(≥1 alignment found)"| SBP_BUILD["build_valid_triples + rank_and_resolve\nEnumerate all (TopSeq_allele × TopSeq_align × probe_align) triples\nValidity: TopSeq chr = Probe chr  AND  strand_agreement ∈ {True, N/A}  AND  overlap > 0\nRank: AS_sum → ΔAS_sum → NM_sum → CoordDelta → scaffold → ambiguous\nMAPQ reported as diagnostic only (not used for ranking)"]:::process
+    TS_CHECK -->|"gp1–gp5\n(≥1 alignment found)"| SBP_BUILD["build_valid_triples\nEnumerate all (TopSeq_allele × TopSeq_align × probe_align) triples\nValidity: TopSeq chr = Probe chr  AND  strand_agreement ∈ {True, N/A}  AND  overlap > 0"]:::process
 
     SBP_BUILD --> VALID{"Valid triples\nexist?"}:::process
 
@@ -246,83 +249,88 @@ flowchart TD
     VALID -->|"No valid triples"| TS_PRESENT{"TopSeq\naligned?\n(gp1–gp4 vs gp5)"}:::process
 
     %% ── No-valid-triple rescue: TopSeq (gp1–gp4) ───────────────────────────
-    TS_PRESENT -->|"Yes (gp1–gp4)\nTopSeq has alignments\n(probe absent · wrong chr · no overlap)"| RESCUE["best_topseq_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · scaffold_resolved · ambiguous"]:::process
+    TS_PRESENT -->|"Yes (gp1–gp4)\nTopSeq has alignments\n(probe absent · wrong chr · no overlap)"| RESCUE["best_topseq_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous"]:::process
 
     RESCUE --> RESCUE_OUT{"TopSeq rescue\noutcome?"}:::process
 
-    RESCUE_OUT -->|"TopSeq ambiguous\n(aligned but unresolvable;\nprobe cannot do better)"| AMB_TS["ambiguous\nChr=0"]:::ambiguous
+    RESCUE_OUT -->|"tie=ambiguous\n(locus unresolvable;\nprobe cannot do better)"| AMB_TS["anchor=topseq_only · tie=ambiguous\nRefAlt=N/A · Chr=0"]:::chr0_to
 
-    RESCUE_OUT -->|"Winner found\n(placed chr)"| CIGAR_SC["parse_cigar_to_ref_pos\nWalk CIGAR from TopSeq alignment\nQuery index = PreLen (+ strand)\nor PostLen (− strand)"]:::process
+    RESCUE_OUT -->|"Winner found"| CIGAR_SC["parse_cigar_to_ref_pos\nWalk CIGAR from TopSeq alignment\nQuery index = PreLen (+ strand) or PostLen (− strand)"]:::process
 
     CIGAR_SC --> SC_CHECK{"SNP target\nin soft-clipped\nregion?"}:::process
 
-    SC_CHECK -->|"Yes — target index\nfalls in soft clip\nno ref coord derivable"| UNM_SC["unmapped\nChr=0"]:::unmapped
+    SC_CHECK -->|"Yes — no ref coord\nderivable"| UNM_SC["anchor=N/A · tie=N/A · RefAlt=N/A\nChr=0"]:::unmapped
 
-    SC_CHECK -->|"No — CIGAR coord\nsuccessfully derived"| RA_RESCUE["determine_ref_alt_v2\nNM comparison + genome ref lookup\nat rescued position"]:::process
+    SC_CHECK -->|"No — CIGAR coord\nderived"| RA_RESCUE["determine_ref_alt_v2\nNM comparison + genome ref lookup"]:::process
 
     RA_RESCUE --> RA_RESCUE_CHECK{"Ref/Alt\nresolvable?"}:::process
 
-    RA_RESCUE_CHECK -->|"NM tie\nunresolvable"| AMB_RA["ambiguous\nChr=0"]:::ambiguous
+    RA_RESCUE_CHECK -->|"RefAlt=ambiguous\n(NM+genome tie)"| AMB_RA["anchor=topseq_only · tie=ts_tie\nRefAlt=ambiguous · Chr=0"]:::chr0_to
 
-    RA_RESCUE_CHECK -->|"Ref/Alt\nassigned"| TSONLY["topseq_only\nCoord = CIGAR coord\nCoordSource = cigar\nCoordDelta = −1\nMAPQ_Probe = NaN\nanchor = topseq_only"]:::topseq_only
+    RA_RESCUE_CHECK -->|"Ref/Alt\nassigned"| TSONLY["anchor=topseq_only · tie=ts_tie\nRefAlt=NM_* · Chr≠0\nCoord=CIGAR · CoordDelta=−1 · MAPQ_Probe=NaN"]:::topseq_only
 
     %% ── No-valid-triple rescue: Probe (gp5 only) ───────────────────────────
-    TS_PRESENT -->|"No (gp5)\nprobe aligned, TopSeq absent"| PROBE_RESCUE["best_probe_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · scaffold_resolved · ambiguous"]:::process
+    TS_PRESENT -->|"No (gp5)\nprobe aligned, TopSeq absent"| PROBE_RESCUE["best_probe_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous"]:::process
 
     PROBE_RESCUE --> PROBE_OUT{"Probe rescue\noutcome?"}:::process
 
-    PROBE_OUT -->|"No probe\nalignment"| UNM_NO["unmapped\nChr=0"]:::unmapped
+    PROBE_OUT -->|"tie=ambiguous\n(locus unresolvable)"| AMB_PROBE["anchor=probe_only · tie=ambiguous\nRefAlt=N/A · Chr=0"]:::chr0_po
 
-    PROBE_OUT -->|"Ambiguous"| AMB_PROBE["ambiguous\nChr=0"]:::ambiguous
+    PROBE_OUT -->|"Winner found"| RA_PROBE["determine_ref_alt_v2\nNM comparison + genome ref lookup"]:::process
 
-    PROBE_OUT -->|"Winner found"| RA_PROBE["determine_ref_alt_v2\nNM comparison + genome ref lookup\nat probe-derived position"]:::process
+    RA_PROBE --> RA_PROBE_CHECK{"Ref/Alt\nresolvable?"}:::process
 
-    RA_PROBE --> PROBEONLY["probe_only\nCoord = probe CIGAR walk\nCoordSource = probe\nMAPQ_TopGenomicSeq = NaN\nanchor = probe_only"]:::probe_only
+    RA_PROBE_CHECK -->|"RefAlt=ambiguous\n(NM+genome tie)"| AMB_PROBE_RA["anchor=probe_only · tie=pb_tie\nRefAlt=ambiguous · Chr=0"]:::chr0_po
+
+    RA_PROBE_CHECK -->|"Ref/Alt\nassigned"| PROBEONLY["anchor=probe_only · tie=pb_tie\nRefAlt=NM_* · Chr≠0\nCoord=probe · CoordDelta=−1 · MAPQ_TopGenomicSeq=NaN"]:::probe_only
 
     %% ── Valid-triple resolution ──────────────────────────────────────────────
-    VALID -->|"Valid triples\nexist"| RANK["rank_and_resolve\nRanking waterfall:\nAS_sum → ΔAS_sum → NM_sum → CoordDelta → scaffold\ntie values: unique · AS_resolved · dAS_resolved\n            NM_resolved · CoordDelta_resolved · scaffold_resolved\n(supplementary CSV for scaffold_resolved and NM_resolved)"]:::process
+    VALID -->|"Valid triples\nexist"| RANK["rank_and_resolve\nAS_sum → ΔAS_sum → NM_sum → CoordDelta → scaffold\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · CoordDelta_resolved · scaffold_resolved\n(scaffold_resolved → scaffold_resolved_markers.csv;\nAS/dAS/NM/CoordDelta_resolved → nm_position_resolved_markers.csv)"]:::process
 
-    RANK -->|"Winner resolved"| DRA:::process
-    RANK -->|"All steps exhausted\ntie = ambiguous\ncompeting rows → ambiguous_markers.csv"| AMB1["ambiguous\nChr=0"]:::ambiguous
+    RANK -->|"tie=ambiguous\n(all ranking steps exhausted;\ncompeting rows → ambiguous_markers.csv)"| AMB1["anchor=topseq_n_probe · tie=ambiguous\nRefAlt=N/A · Chr=0"]:::chr0_tnp
 
-    DRA["determine_ref_alt_v2\nGenome ref lookup (primary) + NM comparison (parallel)\nAgreement reported in RefAltMethodAgreement column"]:::process
+    %% ── CIGAR cross-validation and coordinate selection (before Ref/Alt) ────
+    RANK -->|"Winner resolved\n(tie=unique or *_resolved)"| PROBE_COORD["get_probe_coordinate\nProbe CIGAR walk · Probe strand · Assay type\nc_pos = 1-based variant position"]:::process
 
-    DRA --> NM_WIN{"Ref/Alt\nassignable?"}:::process
-
-    NM_WIN -->|"Yes\n(genome lookup or NM resolved)"| PROBE_COORD["get_probe_coordinate\nProbe CIGAR walk · Probe strand · Assay type\nc_pos = 1-based variant position\n(3′ end for Infinium II · last base for Infinium I)\n(minus-strand deletion correction applied)"]:::process
-
-    NM_WIN -->|"Both methods failed\n(triallelic / no genome match)"| AMB2["ambiguous\nChr=0"]:::ambiguous
-
-    %% ── CIGAR cross-validation and coordinate selection ─────────────────────
-    PROBE_COORD --> CIGAR_XV["parse_cigar_to_ref_pos\nIndependent CIGAR walk on TopSeq alignment\nQuery index = PreLen (+ strand) or PostLen (− strand)\nProduces cigar_coord in parallel with c_pos"]:::process
+    PROBE_COORD --> CIGAR_XV["parse_cigar_to_ref_pos (TopSeq)\nIndependent CIGAR walk · cigar_coord in parallel with c_pos"]:::process
 
     CIGAR_XV --> DELTA_CHECK{"CIGAR target\nin soft clip?"}:::process
 
-    DELTA_CHECK -->|"Yes\n(SNP in soft-clipped\nregion of TopSeq)"| USE_PROBE["CoordSource = probe\nCoordDelta = −1\nfinal_pos = c_pos\n(CIGAR unavailable for this marker)"]:::process
+    DELTA_CHECK -->|"Yes"| USE_PROBE["CoordSource=probe · CoordDelta=−1\nfinal_pos = c_pos"]:::process
 
-    DELTA_CHECK -->|"No\ncigar_coord derived"| DELTA_CALC["CoordDelta = |c_pos − cigar_coord|\nCoordProbe = c_pos  (raw, always stored)\nCoord_TopSeqCIGAR = cigar_coord  (always stored)"]:::process
+    DELTA_CHECK -->|"No"| DELTA_CALC["CoordDelta = |c_pos − cigar_coord|"]:::process
 
     DELTA_CALC --> DELTA_THRESH{"CoordDelta\n≥ 2 bp?\nor indel?"}:::process
 
-    DELTA_THRESH -->|"No  (delta = 0 or 1)\nProbe is more reliable\nor both agree"| USE_PROBE2["CoordSource = probe\nfinal_pos = c_pos"]:::process
+    DELTA_THRESH -->|"No"| USE_PROBE2["CoordSource=probe · final_pos=c_pos"]:::process
 
-    DELTA_THRESH -->|"Yes  (delta ≥ 2 bp)\nor indel marker\nCIGAR empirically more accurate"| USE_CIGAR["CoordSource = cigar\nfinal_pos = cigar_coord"]:::process
+    DELTA_THRESH -->|"Yes"| USE_CIGAR["CoordSource=cigar · final_pos=cigar_coord"]:::process
 
-    USE_PROBE  --> FINAL_COL
-    USE_PROBE2 --> FINAL_COL
-    USE_CIGAR  --> FINAL_COL
+    USE_PROBE  --> DRA
+    USE_PROBE2 --> DRA
+    USE_CIGAR  --> DRA
 
-    FINAL_COL["MapInfo_{assembly} = final_pos\nRefBaseMatch = genome base vs strand-normalised Ref\nAll diagnostic columns stored in output CSV"]:::process
+    DRA["determine_ref_alt_v2\nGenome ref lookup (primary) + NM comparison (parallel)\nCalled with final_pos as MapInfo input\nAgreement reported in RefAltMethodAgreement column"]:::process
 
-    FINAL_COL --> PLACED["mapped / scaffold_resolved\nnm_position_resolved / ref_resolved\nanchor = topseq_n_probe"]:::topseq_n_probe
+    DRA --> NM_WIN{"Ref/Alt\nassignable?"}:::process
 
-    TSONLY --> OUTPUT_TSONLY["topseq_only\nNo probe validation\nanchor = topseq_only"]:::topseq_only
+    NM_WIN -->|"RefAlt=ambiguous\n(triallelic /\nno genome match)"| AMB2["anchor=topseq_n_probe · tie=rank_tie\nRefAlt=ambiguous · Chr=0"]:::chr0_tnp
 
-    PROBEONLY --> OUTPUT_PROBEONLY["probe_only\nNo TopSeq alignment\nanchor = probe_only"]:::probe_only
+    NM_WIN -->|"Ref/Alt\nassigned"| FINAL_COL["MapInfo = final_pos · RefBaseMatch computed\nAll diagnostic columns stored"]:::process
 
-    PLACED  --> OUTPUT_END([Output CSV]):::process
-    OUTPUT_TSONLY --> OUTPUT_END
-    OUTPUT_PROBEONLY --> OUTPUT_END
+    FINAL_COL --> PLACED["anchor=topseq_n_probe · tie=rank_tie\nRefAlt=NM_* · Chr≠0"]:::topseq_n_probe
+
+    PLACED       --> OUTPUT_END([Output CSV]):::process
+    TSONLY       --> OUTPUT_END
+    PROBEONLY    --> OUTPUT_END
+    UNM_TS       --> OUTPUT_END
+    AMB_TS       --> OUTPUT_END
+    UNM_SC       --> OUTPUT_END
+    AMB_RA       --> OUTPUT_END
+    AMB_PROBE    --> OUTPUT_END
+    AMB_PROBE_RA --> OUTPUT_END
+    AMB1         --> OUTPUT_END
+    AMB2         --> OUTPUT_END
 ```
 
 ---
@@ -354,9 +362,9 @@ A **valid triple** is a `(TopSeq_allele × TopSeq_align × probe_align)` combina
 
 When no valid triple exists, the rescue strategy depends on whether TopSeq aligned:
 
-**TopSeq-only rescue** (`best_topseq_rescue`): attempted for gp1–gp4 markers (TopSeq aligned but no valid triple — probe absent, wrong chromosome, or no overlap). Uses the same AS → ΔAS → NM → scaffold ranking applied to individual TopSeq alignments (no CoordDelta step — no probe to cross-validate). If a winner is found, the SNP coordinate is derived from a CIGAR walk on the TopSeq alignment. Fails if the SNP target falls in a soft-clipped region or Ref/Alt is unresolvable. TopSeq ambiguous outcomes do not fall through to probe rescue. Successful markers receive `anchor=topseq_only`, `CoordDelta=−1`, `MAPQ_Probe=NaN`.
+**TopSeq-only rescue** (`best_topseq_rescue`, gp1–gp4): TopSeq aligned but no valid triple (probe absent, wrong chromosome, or no overlap). Uses AS → ΔAS → NM → scaffold ranking on TopSeq alignments. Outcomes: (a) tie=ambiguous → `anchor=topseq_only, tie=ambiguous, Chr=0`; (b) soft-clip → `anchor=N/A, unmapped, Chr=0`; (c) winner + Ref/Alt assigned → `anchor=topseq_only, tie=ts_tie, RefAlt=NM_*, Chr≠0`; (d) winner + Ref/Alt ambiguous → `anchor=topseq_only, tie=ts_tie, RefAlt=ambiguous, Chr=0`. TopSeq ambiguous and failures do **not** trigger probe rescue.
 
-**Probe-only rescue** (`best_probe_rescue`): attempted only for gp5 markers (probe aligned, TopSeq produced no alignments). TopSeq rescue failure (soft-clip, NM tie) and TopSeq ambiguous outcomes do not trigger probe rescue. Uses the same AS → ΔAS → NM → scaffold ranking on probe alignments. No strand filtering is applied (expected strand cannot be determined without a TopSeq anchor). Successful markers receive `anchor=probe_only`, `CoordDelta=−1`, `MAPQ_TopGenomicSeq=NaN`.
+**Probe-only rescue** (`best_probe_rescue`, gp5 only): probe aligned, TopSeq produced no alignments. Uses the same AS → ΔAS → NM → scaffold ranking on probe alignments. No strand filtering (expected strand cannot be determined without a TopSeq anchor). Outcomes: (a) tie=ambiguous → `anchor=probe_only, tie=ambiguous, Chr=0`; (b) winner + Ref/Alt assigned → `anchor=probe_only, tie=pb_tie, RefAlt=NM_*, Chr≠0`; (c) winner + Ref/Alt ambiguous → `anchor=probe_only, tie=pb_tie, RefAlt=ambiguous, Chr=0`.
 
 
 

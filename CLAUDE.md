@@ -115,6 +115,77 @@ See `docs/scaffold_haplotype_thresholds.md` for threshold tiers and rationale.
 
 ---
 
+## Output Design: 3-Dimension Framework
+
+Every marker in the remapped CSV has exactly three orthogonal output dimensions:
+
+### 1. Coordinate role (`anchor_{assembly}`)
+
+| Value | Meaning |
+|---|---|
+| `topseq_n_probe` | Winning locus from a valid (TopSeq × probe) triple |
+| `topseq_only` | Coordinate derived from TopSeq CIGAR walk (no valid triple; TopSeq aligned) |
+| `probe_only` | Coordinate derived from probe alignment (gp5: TopSeq absent) |
+| `N/A` | Unmapped — nothing aligned OR SNP in soft-clipped region |
+
+### 2. Tie label (`tie_{assembly}`)
+
+How the winning locus was selected. Applies to all coordinate roles except `N/A` (unmapped).
+
+| Value | Meaning |
+|---|---|
+| `unique` | Single locus, no tie |
+| `AS_resolved` / `dAS_resolved` / `NM_resolved` / `scaffold_resolved` | Resolved tie |
+| `CoordDelta_resolved` | Resolved via probe–CIGAR cross-validation (**topseq_n_probe only**) |
+| `ambiguous` | Locus could not be resolved — marker gets Chr=0 |
+
+### 3. Ref/Alt method agreement (`RefAltMethodAgreement_{assembly}`)
+
+How Ref/Alt was determined. Applies **only when tie ≠ ambiguous**.
+
+| Value | Meaning |
+|---|---|
+| `NM_validated` / `NM_mismatch` / `NM_corrected` / `NM_tied` / `NM_N/A` / `NM_only` | Outcome of genome-lookup vs NM comparison |
+| `ambiguous` | Both genome lookup and NM comparison failed to assign Ref/Alt — marker gets Chr=0 |
+| `N/A` | Not applicable (tie=ambiguous or anchor=N/A) |
+
+### Valid combinations
+
+```
+anchor          | tie              | RefAltMethodAgreement | Chr
+----------------|------------------|-----------------------|-----
+topseq_n_probe  | unique/*_resolved | NM_*                 | ≠0   usable downstream
+topseq_n_probe  | ambiguous         | N/A                  | 0    locus unresolvable
+topseq_n_probe  | unique/*_resolved | ambiguous            | 0    Ref/Alt unresolvable
+topseq_only     | unique/*_resolved | NM_*                 | ≠0
+topseq_only     | ambiguous         | N/A                  | 0
+topseq_only     | unique/*_resolved | ambiguous            | 0
+probe_only      | unique/*_resolved | NM_*                 | ≠0
+probe_only      | ambiguous         | N/A                  | 0
+probe_only      | unique/*_resolved | ambiguous            | 0
+N/A (unmapped)  | N/A               | N/A                  | 0
+```
+
+**Chr=0 rule:** A marker gets Chr=0 (excluded from downstream) if and only if:
+- anchor=N/A (unmapped), OR
+- tie=ambiguous (locus unresolvable), OR
+- RefAltMethodAgreement=ambiguous (Ref/Alt unresolvable)
+
+The anchor and tie columns are always populated to reflect the actual path taken, even when Chr=0.
+
+### Rescue path routing
+
+- **gp1–gp4** (TopSeq aligned, no valid triple) → TopSeq rescue → anchor=`topseq_only`
+  - Locus ambiguous → tie=`ambiguous`, Chr=0
+  - CIGAR soft-clip → anchor=`N/A`, unmapped
+  - Ref/Alt ambiguous → tie=`ts_tie`, RefAltMethodAgreement=`ambiguous`, Chr=0
+- **gp5** (probe aligned, no TopSeq) → probe rescue → anchor=`probe_only`
+  - Locus ambiguous → tie=`ambiguous`, Chr=0
+  - Ref/Alt ambiguous → tie=`pb_tie`, RefAltMethodAgreement=`ambiguous`, Chr=0
+- TopSeq rescue failure and TopSeq ambiguous do **not** trigger probe rescue.
+
+---
+
 ## `scripts/qc_filter.py`
 
 **Input:** Remapped CSV + reference FASTA + `vcf_contigs.txt` + SAM files

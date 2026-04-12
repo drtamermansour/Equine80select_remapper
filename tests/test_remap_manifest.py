@@ -392,7 +392,7 @@ def test_decision_counters_nm_position_resolved_in_summary():
     c.nm_position_resolved = 17
     c.final_nm_position_resolved = 17
     summary = c.format_summary()
-    assert "NM position-resolved" in summary
+    assert "tie=NM_resolved" in summary
     assert "17" in summary
     assert "nm-position-resolved" in summary
 
