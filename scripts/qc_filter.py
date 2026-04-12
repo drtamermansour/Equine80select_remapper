@@ -221,7 +221,20 @@ def build_final_map(df_final, assembly, map_path):
         snp_alleles = None
         geno_alleles = None
 
-        if snp_a == gref and snp_b == galt:
+        if is_indel and {snp_a, snp_b} == {"D", "I"}:
+            # D/I indel markers: D = absent/shorter allele, I = present/longer allele.
+            # For deletions (gref=long, galt=""): I→gref, D→galt; snp_ref=I (ref has sequence).
+            # For insertions (gref="", galt=long): D→gref, I→galt; snp_ref=D (ref lacks insertion).
+            if len(gref) >= len(galt):
+                d_geno, i_geno = galt, gref
+                snp_ref = "I"
+            else:
+                d_geno, i_geno = gref, galt
+                snp_ref = "D"
+            snp_alleles = f"{snp_a},{snp_b}"
+            geno_alleles = f"{d_geno},{i_geno}" if snp_a == "D" else f"{i_geno},{d_geno}"
+            decision = "indel_as_is"
+        elif snp_a == gref and snp_b == galt:
             decision, snp_ref = "as_is", snp_a
             snp_alleles = f"{snp_a},{snp_b}"
             geno_alleles = f"{gref},{galt}"
@@ -242,7 +255,7 @@ def build_final_map(df_final, assembly, map_path):
             lines.append(f"Error\t{name}\tno_match\t{snp_a},{snp_b}\t{gref},{galt}")
             continue
 
-        if is_indel:
+        if is_indel and not decision.startswith("indel_"):
             decision = "indel_" + decision
 
         lines.append(
@@ -508,8 +521,10 @@ def run_qc(args):
 
     # ── Strand-normalise remapped alleles (to + strand) ─────────────────────
     df_coord = df_coord.copy()
-    df_coord["_gref"] = df_coord.apply(lambda r: strand_normalize(str(r[col_ref]), r[col_strand]), axis=1)
-    df_coord["_galt"] = df_coord.apply(lambda r: strand_normalize(str(r[col_alt]), r[col_strand]), axis=1)
+    df_coord["_gref"] = df_coord.apply(
+        lambda r: strand_normalize(str(r[col_ref]) if pd.notna(r[col_ref]) else "", r[col_strand]), axis=1)
+    df_coord["_galt"] = df_coord.apply(
+        lambda r: strand_normalize(str(r[col_alt]) if pd.notna(r[col_alt]) else "", r[col_strand]), axis=1)
     df_coord["_genome_ref"] = df_coord["Name"].map(ref_alleles)
 
     # ── Auto-correct swapped Ref/Alt assignments ────────────────────────────

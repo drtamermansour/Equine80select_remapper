@@ -771,6 +771,26 @@ def resolve_ref_from_genome(fasta, chr_, var_pos, allele_a_char, allele_b_char, 
     return None
 
 
+def _refine_deletion_pos(fasta, chrom, initial_pos, gref_fwd, max_offset=10):
+    """
+    Search within ±max_offset bases of initial_pos for the exact start of gref_fwd
+    in the genome. Scans outward one base at a time: 0, +1, -1, +2, -2, ...
+    Returns the matching 1-based position, or None if not found within the window.
+    """
+    for offset in range(0, max_offset + 1):
+        for delta in ([0] if offset == 0 else [offset, -offset]):
+            pos = initial_pos + delta
+            if pos < 1:
+                continue
+            try:
+                if fasta.fetch(chrom, pos - 1, pos - 1 + len(gref_fwd)).upper() \
+                        == gref_fwd.upper():
+                    return pos
+            except (ValueError, KeyError):
+                pass
+    return None
+
+
 def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
                           candidates_info, fasta, chr_, final_pos, strand):
     """
@@ -781,18 +801,18 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
     For SNPs (both alleles are single nucleotides):
       - Genome lookup (primary): resolve_ref_from_genome → strand-aware.
       - NM comparison (parallel): determine_ref_alt when TopSeq aligned.
-      - Returns (ref_char, alt_char, agreement_str).
       - agreement_str: 'NM_match'|'NM_unmatch'|'NM_tied'|'NM_N/A'|'NM_only'|'ambiguous'
 
     For indels (at least one allele is multi-base or empty):
       - NM comparison is primary determination.
-      - Deletions (len(gref)>=1): genome fetch validates the NM-determined Ref.
+      - Deletions (len(gref)>=1): genome fetch + ±10 bp refinement validates the Ref.
       - Insertions (gref=''): genome validation not applicable.
       - agreement_str: 'NM_validated'|'NM_mismatch'|'NM_corrected'|'NM_N/A'|'ambiguous'
 
     winning_allele: 'A', 'B', or None (probe_only)
     winning_ts    : alignment dict or None (probe_only)
-    Returns (ref_char, alt_char, agreement_str) or (None, None, 'ambiguous').
+    Returns (ref_char, alt_char, agreement_str, final_pos).
+    final_pos may be refined relative to the input for deletion markers.
     """
     allele_a = candidates_info["AlleleA"]
     allele_b = candidates_info["AlleleB"]
@@ -805,7 +825,7 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
             nm_result = determine_ref_alt(winning_allele, winning_ts,
                                            ts_aligns, candidates_info)
         if nm_result is None:
-            return None, None, "ambiguous"
+            return None, None, "ambiguous", final_pos
 
         ref_char, alt_char = nm_result
         gref = ref_char  # longer or non-empty allele
@@ -821,21 +841,20 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
                                if strand == "-" else alt_char)
                     if genome_base == alt_fwd:
                         # Genome confirms alt_char is actually Ref; swap.
-                        return alt_char, ref_char, "NM_corrected"
+                        return alt_char, ref_char, "NM_corrected", final_pos
                 except (ValueError, KeyError):
                     pass
-            return ref_char, alt_char, "NM_N/A"
+            return ref_char, alt_char, "NM_N/A", final_pos
 
-        # Deletion: validate gref against genome
-        try:
-            fetched = fasta.fetch(chr_, final_pos - 1,
-                                   final_pos - 1 + len(gref)).upper()
-        except (ValueError, KeyError):
-            return ref_char, alt_char, "NM_mismatch"
-
+        # Deletion: validate gref against genome, with ±10 bp refinement.
+        # If the deletion sequence cannot be found, Ref/Alt cannot be confirmed →
+        # return (None, None, "ambiguous") so the call site marks the marker as
+        # ambiguous rather than letting it fall through to the design-conflict filter.
         gref_fwd = reverse_complement(gref) if strand == "-" else gref
-        agreement = "NM_validated" if fetched == gref_fwd.upper() else "NM_mismatch"
-        return ref_char, alt_char, agreement
+        refined = _refine_deletion_pos(fasta, chr_, final_pos, gref_fwd)
+        if refined is not None:
+            return ref_char, alt_char, "NM_validated", refined
+        return None, None, "ambiguous", final_pos
 
     # ── SNP path ──────────────────────────────────────────────────────────────
     # Method 1: genome lookup (primary)
@@ -856,19 +875,19 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
     if genome_result is not None:
         if winning_allele is None:
             # probe_only: no NM available
-            return genome_result[0], genome_result[1], "NM_N/A"
+            return genome_result[0], genome_result[1], "NM_N/A", final_pos
         if nm_tied:
-            return genome_result[0], genome_result[1], "NM_tied"
+            return genome_result[0], genome_result[1], "NM_tied", final_pos
         if nm_result is None:
-            return genome_result[0], genome_result[1], "NM_N/A"
+            return genome_result[0], genome_result[1], "NM_N/A", final_pos
         agreement = "NM_match" if genome_result == nm_result else "NM_unmatch"
-        return genome_result[0], genome_result[1], agreement
+        return genome_result[0], genome_result[1], agreement, final_pos
 
     # Genome lookup failed
     if nm_result is not None:
-        return nm_result[0], nm_result[1], "NM_only"
+        return nm_result[0], nm_result[1], "NM_only", final_pos
 
-    return None, None, "ambiguous"
+    return None, None, "ambiguous", final_pos
 
 
 # ── DECISION COUNTERS ─────────────────────────────────────────────────────────
@@ -1308,6 +1327,16 @@ def run_remapping(args):
                         counters.final_unmapped += 1
                         continue
 
+                    # Empty-allele CIGAR correction for deletions: when the winning
+                    # allele's sequence is empty (deletion allele), seq[PreLen] lands
+                    # on the first suffix base rather than the deletion start, placing
+                    # cigar_coord len(other_allele) bases too far right.
+                    is_indel = (info["AlleleA"] == "" or info["AlleleB"] == "")
+                    if is_indel and not cigar_in_sc \
+                            and info[f"Allele{best_allele}"] == "":
+                        other_allele = "B" if best_allele == "A" else "A"
+                        cigar_coord -= len(info[f"Allele{other_allele}"])
+
                     ref_alt_result = determine_ref_alt_v2(
                         best_allele, best_ts, ts_aligns, info,
                         fasta, best_ts["Chr"], cigar_coord, best_ts["Strand"]
@@ -1319,7 +1348,7 @@ def run_remapping(args):
                         counters.final_ambiguous += 1
                         continue
 
-                    ref_char, alt_char, refalt_agree = ref_alt_result
+                    ref_char, alt_char, refalt_agree, cigar_coord = ref_alt_result
                     ref_base_match_str = "N/A"
                     if len(ref_char) == 1 and len(alt_char) == 1:
                         try:
@@ -1405,7 +1434,7 @@ def run_remapping(args):
                         counters.final_unmapped += 1
                         continue
 
-                    ref_char, alt_char, refalt_agree = ref_alt_result
+                    ref_char, alt_char, refalt_agree, pb_coord = ref_alt_result
 
                     new_cols[col_chr].append(best_pb["Chr"])
                     new_cols[col_pos].append(pb_coord)
@@ -1448,6 +1477,14 @@ def run_remapping(args):
             )
             is_indel = len(candidates_info[name]["AlleleA"]) != 1 or \
                        len(candidates_info[name]["AlleleB"]) != 1
+            # For deletion markers where the winning allele is the empty (deletion)
+            # allele, parse_cigar_to_ref_pos targets seq[PreLen] = SUFFIX[0], which
+            # sits len(deleted_bases) past the true deletion-sequence start.
+            # Subtract that length so cigar_coord points to the first deleted base.
+            if is_indel and not cigar_in_sc \
+                    and candidates_info[name][f"Allele{winning_allele}"] == "":
+                other_allele = "B" if winning_allele == "A" else "A"
+                cigar_coord -= len(candidates_info[name][f"Allele{other_allele}"])
             if cigar_in_sc:
                 cigar_out       = 0
                 coord_delta_val = -1
@@ -1500,7 +1537,7 @@ def run_remapping(args):
                 counters.final_ambiguous += 1
                 continue
 
-            ref_char, alt_char, refalt_agree = ref_alt_result
+            ref_char, alt_char, refalt_agree, final_pos = ref_alt_result
 
             # Deletion minus-strand coordinate correction
             if len(ref_char) > len(alt_char) and winning_ts["Strand"] == "-":
