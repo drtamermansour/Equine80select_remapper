@@ -1394,29 +1394,32 @@ def run_remapping(args):
                     continue
 
                 else:
-                    # If TopSeq aligned but was ambiguous, probe cannot do better
-                    if best_ts is not None:
+                    # If TopSeq aligned but was ambiguous, probe cannot do better.
+                    # best_topseq_rescue returns (None, None, "ambiguous") when TopSeq
+                    # has mapped alignments but they are unresolvable — best_ts is None
+                    # in that case, so we must check ts_tie as well.
+                    if best_ts is not None or ts_tie == "ambiguous":
                         _append_unmapped_cols("N/A", "ambiguous")
                         new_cols[col_align_status][-1] = align_status
                         counters.topseq_ambiguous_no_probe_rescue += 1
                         counters.final_ambiguous += 1
                         continue
 
-                    # TopSeq produced no alignments — try probe-only rescue
+                    # TopSeq produced no alignments (gp5) — try probe-only rescue
                     best_pb, pb_tie = best_probe_rescue(pb_aligns)
-
-                    if best_pb is None:
-                        _append_unmapped_cols("N/A", pb_tie if pb_tie else "N/A")
-                        new_cols[col_align_status][-1] = align_status
-                        counters.probe_rescue_unmapped += 1
-                        counters.final_unmapped += 1
-                        continue
 
                     if pb_tie == "ambiguous":
                         _append_unmapped_cols("N/A", "ambiguous")
                         new_cols[col_align_status][-1] = align_status
                         counters.final_probe_rescue_ambiguous += 1
                         counters.final_ambiguous += 1
+                        continue
+
+                    if best_pb is None:  # no mapped probe alignments (tie="N/A")
+                        _append_unmapped_cols("N/A", pb_tie if pb_tie else "N/A")
+                        new_cols[col_align_status][-1] = align_status
+                        counters.probe_rescue_unmapped += 1
+                        counters.final_unmapped += 1
                         continue
 
                     # Probe-only: derive coordinate from probe CIGAR

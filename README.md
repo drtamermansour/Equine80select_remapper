@@ -242,12 +242,13 @@ flowchart TD
 
     SBP_BUILD --> VALID{"Valid triples\nexist?"}:::process
 
-    %% ── No-valid-triple rescue: TopSeq ─────────────────────────────────────
-    VALID -->|"No valid triples\nTopSeq aligned but probe\nabsent · wrong chr · no overlap"| RESCUE["best_topseq_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · scaffold_resolved · ambiguous"]:::process
+    %% ── No-valid-triple split: TopSeq present (gp1–gp4) vs absent (gp5) ──────
+    VALID -->|"No valid triples"| TS_PRESENT{"TopSeq\naligned?\n(gp1–gp4 vs gp5)"}:::process
+
+    %% ── No-valid-triple rescue: TopSeq (gp1–gp4) ───────────────────────────
+    TS_PRESENT -->|"Yes (gp1–gp4)\nTopSeq has alignments\n(probe absent · wrong chr · no overlap)"| RESCUE["best_topseq_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · scaffold_resolved · ambiguous"]:::process
 
     RESCUE --> RESCUE_OUT{"TopSeq rescue\noutcome?"}:::process
-
-    RESCUE_OUT -->|"No TopSeq aligns\n(absent — no alignments)"| PROBE_RESCUE["best_probe_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · scaffold_resolved · ambiguous"]:::process
 
     RESCUE_OUT -->|"TopSeq ambiguous\n(aligned but unresolvable;\nprobe cannot do better)"| AMB_TS["ambiguous\nChr=0"]:::ambiguous
 
@@ -265,7 +266,9 @@ flowchart TD
 
     RA_RESCUE_CHECK -->|"Ref/Alt\nassigned"| TSONLY["topseq_only\nCoord = CIGAR coord\nCoordSource = cigar\nCoordDelta = −1\nMAPQ_Probe = NaN\nanchor = topseq_only"]:::topseq_only
 
-    %% ── No-valid-triple rescue: Probe ───────────────────────────────────────
+    %% ── No-valid-triple rescue: Probe (gp5 only) ───────────────────────────
+    TS_PRESENT -->|"No (gp5)\nprobe aligned, TopSeq absent"| PROBE_RESCUE["best_probe_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · scaffold_resolved · ambiguous"]:::process
+
     PROBE_RESCUE --> PROBE_OUT{"Probe rescue\noutcome?"}:::process
 
     PROBE_OUT -->|"No probe\nalignment"| UNM_NO["unmapped\nChr=0"]:::unmapped
@@ -349,11 +352,11 @@ A **valid triple** is a `(TopSeq_allele × TopSeq_align × probe_align)` combina
 
 ### Rescue Paths (no valid triple)
 
-When no valid triple exists, two sequential rescue strategies are attempted:
+When no valid triple exists, the rescue strategy depends on whether TopSeq aligned:
 
-**TopSeq-only rescue** (`best_topseq_rescue`): uses the same AS → ΔAS → NM → scaffold ranking applied to individual TopSeq alignments (no CoordDelta step — no probe to cross-validate). If a winner is found, the SNP coordinate is derived from a CIGAR walk on the TopSeq alignment. Fails if the SNP target falls in a soft-clipped region or Ref/Alt is unresolvable. Successful markers receive `anchor=topseq_only`, `CoordDelta=−1`, `MAPQ_Probe=NaN`.
+**TopSeq-only rescue** (`best_topseq_rescue`): attempted for gp1–gp4 markers (TopSeq aligned but no valid triple — probe absent, wrong chromosome, or no overlap). Uses the same AS → ΔAS → NM → scaffold ranking applied to individual TopSeq alignments (no CoordDelta step — no probe to cross-validate). If a winner is found, the SNP coordinate is derived from a CIGAR walk on the TopSeq alignment. Fails if the SNP target falls in a soft-clipped region or Ref/Alt is unresolvable. TopSeq ambiguous outcomes do not fall through to probe rescue. Successful markers receive `anchor=topseq_only`, `CoordDelta=−1`, `MAPQ_Probe=NaN`.
 
-**Probe-only rescue** (`best_probe_rescue`): attempted when TopSeq rescue fails or returns ambiguous. Uses the same AS → ΔAS → NM → scaffold ranking on probe alignments. No strand filtering is applied (expected strand cannot be determined without a TopSeq anchor). Successful markers receive `anchor=probe_only`, `CoordDelta=−1`, `MAPQ_TopGenomicSeq=NaN`.
+**Probe-only rescue** (`best_probe_rescue`): attempted only for gp5 markers (probe aligned, TopSeq produced no alignments). TopSeq rescue failure (soft-clip, NM tie) and TopSeq ambiguous outcomes do not trigger probe rescue. Uses the same AS → ΔAS → NM → scaffold ranking on probe alignments. No strand filtering is applied (expected strand cannot be determined without a TopSeq anchor). Successful markers receive `anchor=probe_only`, `CoordDelta=−1`, `MAPQ_TopGenomicSeq=NaN`.
 
 
 
