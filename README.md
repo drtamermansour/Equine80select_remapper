@@ -88,6 +88,12 @@ bash run_pipeline.sh \
     -o results/
 ```
 
+The pipeline script is a wrapper for 3 steps:
+* Step 1: Index reference if needed 
+* Step 2: Core remapping (`remap_manifest.py`) 
+* Step 3: QC filtering and output generation (`qc_filter.py`) 
+
+
 ### All Options
 
 #### General
@@ -98,7 +104,7 @@ bash run_pipeline.sh \
 | `-r / --reference` | *(required)* | Path to the target reference genome FASTA |
 | `-a / --assembly` | derived from FASTA filename | Assembly name used to label outputs |
 | `-o / --output-dir` | `./output` | Output directory |
-| `--keep-temp` | off | Retain intermediate FASTA/SAM files after pipeline completes |
+| `--keep-temp` | off | Retain intermediate FASTA/SAM files after `remap_manifest.py` completes |
 | `--resume` | off | Skip step 2 (`remap_manifest.py`) if the remapped CSV already exists |
 
 #### Remapping options (forwarded to `remap_manifest.py`)
@@ -205,7 +211,7 @@ The remapped CSV adds **21 new columns** to every manifest row. All column names
 
 ---
 
-## Pipeline Decision Tree
+## Remapping Decision Tree
 
 The diagram below shows the full per-marker decision flow in `scripts/remap_manifest.py`.
 
@@ -340,23 +346,6 @@ A **valid triple** is a `(TopSeq_allele × TopSeq_align × probe_align)` combina
 - Strand agreement check (`compute_probe_strand_agreement`) returns `"True"` or `"N/A"`
 - Probe–TopSeq overlap > 0 bp
 
-### Tiebreaking Waterfall (main path — `rank_and_resolve`)
-
-When multiple valid triples point to different loci, they are ranked by this cascade until a unique winner is found:
-
-| Step | Criterion | `tie_{assembly}` label |
-|---|---|---|
-| 1 | All triples at same locus | `unique` |
-| 2 | Highest `AS_sum = ts.AS + pb.AS` | `AS_resolved` |
-| 3 | Highest `ΔAS_sum` (AS gap vs. competing loci) | `dAS_resolved` |
-| 4 | Lowest `NM_sum = ts.NM + pb.NM` | `NM_resolved` |
-| 5 | Lowest `CoordDelta` (probe vs. CIGAR coordinate agreement) | `CoordDelta_resolved` |
-| 6 | Placed chromosome vs. scaffold | `scaffold_resolved` |
-| 7 | All steps exhausted → Chr=0 | `ambiguous` |
-
-> `topseq_only` and `probe_only` markers carry a `tie_{assembly}` value from their single-alignment ranking (AS → ΔAS → NM → scaffold). `CoordDelta_resolved` never appears in rescue paths because there is no probe–CIGAR cross-validation without a valid triple. The per-tie-value breakdown for both rescue paths is in `remapping_Report.txt`.
-
-> **MAPQ is not used for ranking** in the v2 algorithm. It is reported as a diagnostic column only.
 
 ### Rescue Paths (no valid triple)
 
@@ -394,6 +383,26 @@ Additionally, **indel markers always use the CIGAR coordinate** regardless of `C
 
 `CoordProbe_{assembly}` always stores the raw probe coordinate before any override, enabling retrospective comparison.
 `CoordDelta` is a continuous quality signal; `CoordDelta=0` markers are 99.0% coord-accurate.
+
+
+### Tiebreaking Waterfall (main path — `rank_and_resolve`)
+
+When multiple valid triples point to different loci, they are ranked by this cascade until a unique winner is found:
+
+| Step | Criterion | `tie_{assembly}` label |
+|---|---|---|
+| 1 | All triples at same locus | `unique` |
+| 2 | Highest `AS_sum = ts.AS + pb.AS` | `AS_resolved` |
+| 3 | Highest `ΔAS_sum` (AS gap vs. competing loci) | `dAS_resolved` |
+| 4 | Lowest `NM_sum = ts.NM + pb.NM` | `NM_resolved` |
+| 5 | Lowest `CoordDelta` (probe vs. CIGAR coordinate agreement) | `CoordDelta_resolved` |
+| 6 | Placed chromosome vs. scaffold | `scaffold_resolved` |
+| 7 | All steps exhausted → Chr=0 | `ambiguous` |
+
+> `topseq_only` and `probe_only` markers carry a `tie_{assembly}` value from their single-alignment ranking (AS → ΔAS → NM → scaffold). `CoordDelta_resolved` never appears in rescue paths because there is no probe–CIGAR cross-validation without a valid triple. The per-tie-value breakdown for both rescue paths is in `remapping_Report.txt`.
+
+> **MAPQ is reported as a diagnostic column only, but not used for ranking.**
+
 
 
 ### Ref/Alt Determination (`determine_ref_alt_v2`)
