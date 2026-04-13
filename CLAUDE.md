@@ -145,7 +145,7 @@ How Ref/Alt was determined. Applies **only when tie ≠ ambiguous**.
 
 | Value | Meaning |
 |---|---|
-| `NM_validated` / `NM_mismatch` / `NM_corrected` / `NM_tied` / `NM_N/A` / `NM_only` | Outcome of genome-lookup vs NM comparison |
+| `NM_match` / `NM_unmatch` / `NM_validated` / `NM_mismatch` / `NM_corrected` / `NM_tied` / `NM_N/A` / `NM_only` | Outcome of genome-lookup vs NM comparison; see README for full value definitions |
 | `ambiguous` | Both genome lookup and NM comparison failed to assign Ref/Alt — marker gets Chr=0 |
 | `N/A` | Not applicable (tie=ambiguous or anchor=N/A) |
 

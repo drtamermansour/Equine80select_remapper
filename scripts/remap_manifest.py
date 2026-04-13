@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 
 import pandas as pd
@@ -847,14 +848,13 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
             return ref_char, alt_char, "NM_N/A", final_pos
 
         # Deletion: validate gref against genome, with ±10 bp refinement.
-        # If the deletion sequence cannot be found, Ref/Alt cannot be confirmed →
-        # return (None, None, "ambiguous") so the call site marks the marker as
-        # ambiguous rather than letting it fall through to the design-conflict filter.
+        # If the deletion sequence cannot be found, return "NM_mismatch" so the
+        # marker passes through to qc_filter.py's design-conflict filter for removal.
         gref_fwd = reverse_complement(gref) if strand == "-" else gref
         refined = _refine_deletion_pos(fasta, chr_, final_pos, gref_fwd)
         if refined is not None:
             return ref_char, alt_char, "NM_validated", refined
-        return None, None, "ambiguous", final_pos
+        return ref_char, alt_char, "NM_mismatch", final_pos
 
     # ── SNP path ──────────────────────────────────────────────────────────────
     # Method 1: genome lookup (primary)
@@ -934,11 +934,14 @@ class DecisionCounters:
     probe_rescue_tie_das:        int = 0
     probe_rescue_tie_nm:         int = 0
     probe_rescue_tie_scaffold:   int = 0
-    # position resolution
-    unique_position:         int = 0
-    scaffold_resolved:       int = 0
-    nm_position_resolved:    int = 0
-    position_ambiguous:      int = 0
+    # position resolution — topseq_n_probe tie breakdown (all 6 values)
+    unique_position:              int = 0   # tie=unique
+    topseq_n_probe_tie_as:        int = 0   # tie=AS_resolved
+    topseq_n_probe_tie_das:       int = 0   # tie=dAS_resolved
+    nm_position_resolved:         int = 0   # tie=NM_resolved
+    topseq_n_probe_tie_coorddelta: int = 0  # tie=CoordDelta_resolved
+    scaffold_resolved:             int = 0  # tie=scaffold_resolved
+    position_ambiguous:            int = 0  # tie=ambiguous
     # ref/alt determination
     ref_alt_ref_resolved:    int = 0
     ref_alt_nm_tie:          int = 0
@@ -964,7 +967,7 @@ class DecisionCounters:
     final_unmapped:               int = 0
     final_ambiguous:              int = 0
 
-    def format_summary(self) -> str:
+    def format_summary(self, three_d=None) -> str:
         W = 60
         SEP = "\u2500" * W
         lines = []
@@ -976,24 +979,41 @@ class DecisionCounters:
         def hdr(title):
             lines.append(f"\u2500\u2500 {title} {SEP[len(title) + 4:]}")
 
-        # ── derived totals ───────────────────────��──────────────────────────���─
-        mapq_total           = self.mapq_60 + self.mapq_30_59 + self.mapq_1_29 + self.mapq_0
-        topseq_n_probe_mapped = (self.final_mapped + self.final_scaffold_resolved
-                                 + self.final_nm_position_resolved)
-        topseq_n_probe_total  = topseq_n_probe_mapped + self.final_topseq_n_probe_ambiguous
-        topseq_only_total     = self.final_topseq_only + self.final_topseq_only_ambiguous
-        probe_only_total      = self.final_probe_only  + self.final_probe_only_ambiguous
-        pos_resolved_total   = (self.unique_position + self.scaffold_resolved
-                                + self.nm_position_resolved)
-        total_check          = (topseq_n_probe_total + topseq_only_total
-                                + probe_only_total + self.final_unmapped)
+        # Direct-counter fallback for the topseq_n_probe tie breakdown.
+        # Used when three_d is None (e.g. unit tests that call format_summary directly).
+        # In production three_d is always provided and gives Chr≠0-only counts;
+        # the fallback uses total-per-tie counters (includes any Chr=0 RefAlt=ambiguous).
+        _tnp_counter = {
+            "unique":              self.unique_position,
+            "AS_resolved":         self.topseq_n_probe_tie_as,
+            "dAS_resolved":        self.topseq_n_probe_tie_das,
+            "NM_resolved":         self.nm_position_resolved,
+            "CoordDelta_resolved": self.topseq_n_probe_tie_coorddelta,
+            "scaffold_resolved":   self.scaffold_resolved,
+        }
+
+        def _nonzero(anchor, tie):
+            """Chr\u22600 count for (anchor, tie); falls back to per-tie counters if no 3D dict."""
+            if three_d is not None:
+                return three_d.get((anchor, tie), {}).get("NM_*", 0)
+            if anchor == "topseq_n_probe":
+                return _tnp_counter.get(tie, 0)
+            return 0
+
+        # \u2500\u2500 derived totals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        # mapq_total == topseq_n_probe Chr\u22600 == valid_pair_found - position_ambiguous - ref_alt_nm_tie
+        mapq_total        = self.mapq_60 + self.mapq_30_59 + self.mapq_1_29 + self.mapq_0
+        topseq_only_total = self.final_topseq_only + self.final_topseq_only_ambiguous
+        probe_only_total  = self.final_probe_only  + self.final_probe_only_ambiguous
+        total_check       = (self.valid_pair_found + topseq_only_total
+                             + probe_only_total + self.final_unmapped)
 
         lines.append("")
         lines.append("=== REMAPPING DECISION SUMMARY ===")
         lines.append(f"  {'Total markers loaded:':<{W - 2}} {self.total_loaded:>8,}")
         lines.append("")
 
-        # Step 1
+        # \u2500\u2500 Step 1 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         hdr("Step 1: Alignment Status (before filtering)")
         row("gp1 \u2013 both TopSeq alleles + probe:",   self.align_gp1)
         row("gp2 \u2013 one TopSeq allele  + probe:",    self.align_gp2)
@@ -1003,52 +1023,50 @@ class DecisionCounters:
         row("unmapped (nothing aligned):",               self.align_unmapped)
         lines.append("")
 
-        # Step 2
+        # \u2500\u2500 Step 2: all three anchor branches as inline trees \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         hdr("Step 2: Valid Triple Filtering (chr + strand + overlap)")
+
+        # \u2500\u2500 topseq_n_probe branch \u2500\u2500
         row("\u22651 valid triple \u2192 anchor=topseq_n_probe:", self.valid_pair_found)
+        row("\u251c\u2500 tie=ambiguous \u2192 locus unresolvable (Chr=0):", self.position_ambiguous, indent=1)
+        row("\u251c\u2500 Ref/Alt=ambiguous \u2192 Ref/Alt unresolvable (Chr=0):", self.ref_alt_nm_tie, indent=1)
+        row("\u2514\u2500 Ref/Alt assigned \u2192 topseq_n_probe (Chr\u22600):", mapq_total, indent=1)
+        for _t in ("unique", "AS_resolved", "dAS_resolved", "NM_resolved",
+                   "CoordDelta_resolved", "scaffold_resolved"):
+            row(f"\u2502  tie={_t}:", _nonzero("topseq_n_probe", _t), indent=3)
+
+        # \u2500\u2500 no-valid-triple branches \u2500\u2500
         row("No valid triple (total):", self.no_valid_pair)
-        lines.append("    TopSeq rescue (gp1\u2013gp4, anchor=topseq_only):")
-        row("\u251c\u2500 tie=* \u2192 CIGAR + Ref/Alt \u2192 topseq_only (Chr\u22600):", self.final_topseq_only, indent=2)
+        lines.append("    TopSeq rescue (gp1\u2013gp4, anchor=topseq_only, coord=TopSeq CIGAR walk):")
+        row("\u251c\u2500 tie=unique|*_resolved \u2192 Ref/Alt assigned (Chr\u22600):", self.final_topseq_only, indent=2)
         row("\u2502  tie=unique:",            self.topseq_rescue_tie_unique,   indent=3)
         row("\u2502  tie=AS_resolved:",       self.topseq_rescue_tie_as,       indent=3)
         row("\u2502  tie=dAS_resolved:",      self.topseq_rescue_tie_das,      indent=3)
         row("\u2502  tie=NM_resolved:",       self.topseq_rescue_tie_nm,       indent=3)
         row("\u2502  tie=scaffold_resolved:", self.topseq_rescue_tie_scaffold,  indent=3)
+        row("\u251c\u2500 tie=unique|*_resolved + RefAlt=ambiguous (Chr=0):", self.topseq_rescue_failed_refalt, indent=2)
         row("\u251c\u2500 tie=ambiguous \u2192 locus unresolvable (Chr=0):", self.topseq_ambiguous_no_probe_rescue, indent=2)
-        row("\u251c\u2500 tie=* + Ref/Alt=ambiguous \u2192 NM tie (Chr=0):", self.topseq_rescue_failed_refalt, indent=2)
-        row("\u2514\u2500 SNP in soft-clipped region \u2192 unmapped (Chr=0):", self.topseq_rescue_failed_softclip, indent=2)
-        lines.append("    Probe rescue (gp5, anchor=probe_only):")
-        row("\u251c\u2500 tie=* \u2192 Ref/Alt \u2192 probe_only (Chr\u22600):", self.final_probe_only, indent=2)
+        row("\u2514\u2500 SNP in soft-clipped region \u2192 anchor=N/A (Chr=0):", self.topseq_rescue_failed_softclip, indent=2)
+        lines.append("    Probe rescue (gp5, anchor=probe_only, coord=probe alignment):")
+        row("\u251c\u2500 tie=unique|*_resolved \u2192 Ref/Alt assigned (Chr\u22600):", self.final_probe_only, indent=2)
         row("\u2502  tie=unique:",            self.probe_rescue_tie_unique,    indent=3)
         row("\u2502  tie=AS_resolved:",       self.probe_rescue_tie_as,        indent=3)
         row("\u2502  tie=dAS_resolved:",      self.probe_rescue_tie_das,       indent=3)
         row("\u2502  tie=NM_resolved:",       self.probe_rescue_tie_nm,        indent=3)
         row("\u2502  tie=scaffold_resolved:", self.probe_rescue_tie_scaffold,   indent=3)
-        row("\u251c\u2500 tie=ambiguous \u2192 locus unresolvable (Chr=0):", self.final_probe_rescue_ambiguous, indent=2)
-        row("\u2514\u2500 tie=* + Ref/Alt=ambiguous \u2192 NM tie (Chr=0):", self.probe_refalt_ambiguous, indent=2)
+        row("\u251c\u2500 tie=unique|*_resolved + RefAlt=ambiguous (Chr=0):", self.probe_refalt_ambiguous, indent=2)
+        row("\u2514\u2500 tie=ambiguous \u2192 locus unresolvable (Chr=0):", self.final_probe_rescue_ambiguous, indent=2)
         lines.append("")
 
-        # Step 3
-        hdr(f"Step 3: Position Resolution (of {self.valid_pair_found:,} topseq_n_probe markers)")
-        row("tie=unique:", self.unique_position)
-        row("tie=scaffold_resolved (scaffold_resolved_markers.csv):", self.scaffold_resolved)
-        row("tie=NM_resolved (nm_position_resolved_markers.csv):", self.nm_position_resolved)
-        row("tie=ambiguous \u2192 locus unresolvable (Chr=0):", self.position_ambiguous)
-        lines.append("")
-
-        # Step 4
-        hdr(f"Step 4: Ref/Alt Determination (of {pos_resolved_total:,} position-resolved markers)")
-        row("NM tie resolved by ref lookup:", self.ref_alt_ref_resolved)
-        row("Ref/Alt=ambiguous \u2192 NM+genome tie (Chr=0):", self.ref_alt_nm_tie)
-        row("Genome ref base mismatches (RefBaseMatch column):", self.ref_base_mismatch)
-        row("Strand agreement unexpected (StrandAgreementAsExpected=False):", self.strand_agreement_unexpected)
-        lines.append("")
-
-        # Diagnostics
+        # \u2500\u2500 Diagnostics \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         coord_diag_total = (self.coord_delta_0 + self.coord_delta_1
                             + self.coord_delta_ge2 + self.coord_delta_neg1)
 
-        hdr(f"Diagnostics (of {mapq_total:,} topseq+probe mapped markers)")
+        hdr(f"Diagnostics (topseq_n_probe Chr\u22600: {mapq_total:,})")
+        lines.append(
+            f"  = {self.valid_pair_found:,} total \u2212 {self.position_ambiguous:,} "
+            f"tie=ambiguous \u2212 {self.ref_alt_nm_tie:,} Ref/Alt=ambiguous"
+        )
         lines.append("")
         lines.append("  MAPQ Distribution (min of winning TopSeq+probe pair):")
         row("MAPQ = 60:",   self.mapq_60,    indent=1)
@@ -1066,21 +1084,56 @@ class DecisionCounters:
         row("probe  (MapInfo = probe coord):", self.coord_source_probe, indent=1)
         row("cigar  (MapInfo = cigar coord):", self.coord_source_cigar, indent=1)
         lines.append("")
+        lines.append("  Ref/Alt Diagnostics (topseq_n_probe Chr\u22600):")
+        row("NM tie resolved by ref lookup:", self.ref_alt_ref_resolved, indent=1)
+        row("Genome ref base mismatches (RefBaseMatch column):", self.ref_base_mismatch, indent=1)
+        row("Strand agreement unexpected (StrandAgreementAsExpected=False):", self.strand_agreement_unexpected, indent=1)
+        lines.append("")
 
-        # Final
+        # \u2500\u2500 3D summary table \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         lines.append("\u2550" * W)
-        lines.append(f"Final Output (all {self.total_loaded:,} markers):")
-        row("topseq_n_probe  (anchor=topseq_n_probe):", topseq_n_probe_total)
-        row("of which scaffold-resolved (scaffold_resolved_markers.csv):", self.final_scaffold_resolved, indent=1)
-        row("of which nm-position-resolved:", self.final_nm_position_resolved, indent=1)
-        row("of which tie=ambiguous (Chr=0):", self.final_topseq_n_probe_ambiguous, indent=1)
-        row("topseq_only     (anchor=topseq_only):", topseq_only_total)
-        row("of which tie=ambiguous (Chr=0):", self.final_topseq_only_ambiguous, indent=1)
-        row("probe_only      (anchor=probe_only):", probe_only_total)
-        row("of which tie=ambiguous (Chr=0):", self.final_probe_only_ambiguous, indent=1)
-        row("unmapped        (Chr=0):", self.final_unmapped)
-        lines.append("  " + "\u2500" * (W - 2))
-        lines.append(f"  {'Total:':<{W - 2}} {total_check:>8,}")
+        lines.append("3-Dimension Summary (anchor \u00d7 tie \u00d7 Ref/Alt outcome)")
+        if three_d is not None:
+            ANCHOR_ORDER = ["topseq_n_probe", "topseq_only", "probe_only", "N/A"]
+            TIE_ORDER    = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
+                            "CoordDelta_resolved", "scaffold_resolved", "ambiguous", "N/A"]
+
+            lines.append(
+                f"  {'anchor / tie':<28} {'NM_*(Chr\u22600)':>10}"
+                f" {'amb(Chr=0)':>10} {'N/A(Chr=0)':>10} {'Total':>8}"
+            )
+            lines.append("  " + "\u2500" * 66)
+
+            grand_nm = grand_amb = grand_na = 0
+            for anchor in ANCHOR_ORDER:
+                anchor_total = sum(
+                    v
+                    for (a, t), d in three_d.items() if a == anchor
+                    for v in d.values()
+                )
+                if anchor_total == 0:
+                    continue
+                lines.append(f"  anchor={anchor}")
+                for t in TIE_ORDER:
+                    d  = three_d.get((anchor, t), {})
+                    nm  = d.get("NM_*", 0)
+                    amb = d.get("ambiguous", 0)
+                    na  = d.get("N/A", 0)
+                    row_total = nm + amb + na
+                    if row_total == 0:
+                        continue
+                    lines.append(
+                        f"    tie={t:<24} {nm:>10,} {amb:>10,} {na:>10,} {row_total:>8,}"
+                    )
+                    grand_nm  += nm
+                    grand_amb += amb
+                    grand_na  += na
+            grand_total = grand_nm + grand_amb + grand_na
+            lines.append("  " + "\u2500" * 66)
+            lines.append(
+                f"  {'Total':<28} {grand_nm:>10,} {grand_amb:>10,}"
+                f" {grand_na:>10,} {grand_total:>8,}"
+            )
         lines.append("")
         return "\n".join(lines)
 
@@ -1316,6 +1369,12 @@ def run_remapping(args):
                     nm_pos_rows.extend({"Name": name, **r} for r in result[4])
                     if tie_status == "NM_resolved":
                         counters.nm_position_resolved += 1
+                    elif tie_status == "AS_resolved":
+                        counters.topseq_n_probe_tie_as += 1
+                    elif tie_status == "dAS_resolved":
+                        counters.topseq_n_probe_tie_das += 1
+                    else:  # CoordDelta_resolved
+                        counters.topseq_n_probe_tie_coorddelta += 1
                 else:
                     counters.unique_position += 1
 
@@ -1658,7 +1717,16 @@ def run_remapping(args):
         print(f"[remap] Temp files in: {temp_dir}")
 
         # ── Step 7: Write decision summary to stdout and remapping_Report.txt ──
-        summary = counters.format_summary()
+        # Compute 3D groupby (anchor × tie × RefAlt bucket) from final columns
+        three_d = defaultdict(lambda: defaultdict(int))
+        for i in range(len(new_cols[col_anchor])):
+            a  = new_cols[col_anchor][i]
+            t  = new_cols[col_tie][i]
+            r  = str(new_cols[col_refalt_agree][i])
+            rb = "NM_*" if r.startswith("NM_") else r   # "NM_*" / "ambiguous" / "N/A"
+            three_d[(a, t)][rb] += 1
+
+        summary = counters.format_summary(three_d)
         print(summary)
         report_path = os.path.join(out_dir, "remapping_Report.txt")
         with open(report_path, "w") as f:

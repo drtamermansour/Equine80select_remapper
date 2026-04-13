@@ -387,14 +387,13 @@ def test_decision_counters_ref_resolved_in_summary():
 # ── DecisionCounters nm_position_resolved ────────────────────────────────────
 
 def test_decision_counters_nm_position_resolved_in_summary():
-    """format_summary must include nm_position_resolved and nm-position-resolved lines."""
+    """format_summary must include the tie=NM_resolved label and its count."""
     c = DecisionCounters()
     c.nm_position_resolved = 17
     c.final_nm_position_resolved = 17
     summary = c.format_summary()
     assert "tie=NM_resolved" in summary
     assert "17" in summary
-    assert "nm-position-resolved" in summary
 
 
 # ── reverse_complement ────────────────────────────────────────────────────────
@@ -1072,7 +1071,7 @@ def test_refalt_v2_deletion_nm_validated():
 
 
 def test_refalt_v2_deletion_nm_mismatch():
-    """Deletion marker: genome doesn't match within ±10 bp → ambiguous (None, None)."""
+    """Deletion marker: genome doesn't match within ±10 bp → NM_mismatch with NM alleles."""
     ts_a = _ts("chr1", 1000, nm=0)
     ts_b = _ts("chr1", 1000, nm=2)
     ts_aligns = {"A": [ts_a], "B": [ts_b]}
@@ -1082,9 +1081,9 @@ def test_refalt_v2_deletion_nm_mismatch():
     ref, alt, agree, _ = determine_ref_alt_v2(
         "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
     )
-    assert ref is None
-    assert alt is None
-    assert agree == "ambiguous"
+    assert ref == "AT"
+    assert alt == ""
+    assert agree == "NM_mismatch"
 
 
 def test_refalt_v2_insertion_nm_na():

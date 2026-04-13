@@ -265,9 +265,9 @@ flowchart TD
 
     RA_RESCUE --> RA_RESCUE_CHECK{"Ref/Alt\nresolvable?"}:::process
 
-    RA_RESCUE_CHECK -->|"RefAlt=ambiguous\n(NM+genome tie)"| AMB_RA["anchor=topseq_only · tie=ts_tie\nRefAlt=ambiguous · Chr=0"]:::chr0_to
+    RA_RESCUE_CHECK -->|"RefAlt=ambiguous\n(genome+NM tie)"| AMB_RA["anchor=topseq_only · tie=unique or *_resolved\nRefAlt=ambiguous · Chr=0"]:::chr0_to
 
-    RA_RESCUE_CHECK -->|"Ref/Alt\nassigned"| TSONLY["anchor=topseq_only · tie=ts_tie\nRefAlt=NM_* · Chr≠0\nCoord=CIGAR · CoordDelta=−1 · MAPQ_Probe=NaN"]:::topseq_only
+    RA_RESCUE_CHECK -->|"Ref/Alt\nassigned"| TSONLY["anchor=topseq_only · tie=unique or *_resolved\nRefAlt=NM_* · Chr≠0\nCoord=CIGAR · CoordDelta=−1 · MAPQ_Probe=NaN"]:::topseq_only
 
     %% ── No-valid-triple rescue: Probe (gp5 only) ───────────────────────────
     TS_PRESENT -->|"No (gp5)\nprobe aligned, TopSeq absent"| PROBE_RESCUE["best_probe_rescue\n_rank_single_aligns waterfall:\nAS → ΔAS → NM → scaffold → ambiguous"]:::process
@@ -280,9 +280,9 @@ flowchart TD
 
     RA_PROBE --> RA_PROBE_CHECK{"Ref/Alt\nresolvable?"}:::process
 
-    RA_PROBE_CHECK -->|"RefAlt=ambiguous\n(NM+genome tie)"| AMB_PROBE_RA["anchor=probe_only · tie=pb_tie\nRefAlt=ambiguous · Chr=0"]:::chr0_po
+    RA_PROBE_CHECK -->|"RefAlt=ambiguous\n(NM+genome tie)"| AMB_PROBE_RA["anchor=probe_only · tie=unique or *_resolved\nRefAlt=ambiguous · Chr=0"]:::chr0_po
 
-    RA_PROBE_CHECK -->|"Ref/Alt\nassigned"| PROBEONLY["anchor=probe_only · tie=pb_tie\nRefAlt=NM_* · Chr≠0\nCoord=probe · CoordDelta=−1 · MAPQ_TopGenomicSeq=NaN"]:::probe_only
+    RA_PROBE_CHECK -->|"Ref/Alt\nassigned"| PROBEONLY["anchor=probe_only · tie=unique or *_resolved\nRefAlt=NM_* · Chr≠0\nCoord=probe · CoordDelta=−1 · MAPQ_TopGenomicSeq=NaN"]:::probe_only
 
     %% ── Valid-triple resolution ──────────────────────────────────────────────
     VALID -->|"Valid triples\nexist"| RANK["rank_and_resolve\nAS_sum → ΔAS_sum → NM_sum → CoordDelta → scaffold\ntie: unique · AS_resolved · dAS_resolved\n     NM_resolved · CoordDelta_resolved · scaffold_resolved\n(scaffold_resolved → scaffold_resolved_markers.csv;\nAS/dAS/NM/CoordDelta_resolved → nm_position_resolved_markers.csv)"]:::process
@@ -314,11 +314,11 @@ flowchart TD
 
     DRA --> NM_WIN{"Ref/Alt\nassignable?"}:::process
 
-    NM_WIN -->|"RefAlt=ambiguous\n(triallelic /\nno genome match)"| AMB2["anchor=topseq_n_probe · tie=rank_tie\nRefAlt=ambiguous · Chr=0"]:::chr0_tnp
+    NM_WIN -->|"RefAlt=ambiguous\n(triallelic /\nno genome match)"| AMB2["anchor=topseq_n_probe · tie=unique or *_resolved\nRefAlt=ambiguous · Chr=0"]:::chr0_tnp
 
     NM_WIN -->|"Ref/Alt\nassigned"| FINAL_COL["MapInfo = final_pos · RefBaseMatch computed\nAll diagnostic columns stored"]:::process
 
-    FINAL_COL --> PLACED["anchor=topseq_n_probe · tie=rank_tie\nRefAlt=NM_* · Chr≠0"]:::topseq_n_probe
+    FINAL_COL --> PLACED["anchor=topseq_n_probe · tie=unique or *_resolved\nRefAlt=NM_* · Chr≠0"]:::topseq_n_probe
 
     PLACED       --> OUTPUT_END([Output CSV]):::process
     TSONLY       --> OUTPUT_END
@@ -433,15 +433,14 @@ The genome result is used when available. Agreement between the two methods is r
 | `NM_match` | SNP | Genome lookup and NM comparison both succeeded and agree |
 | `NM_unmatch` | SNP | Both succeeded but disagree — genome result used (flag for QC; inspect for nearby variants) |
 | `NM_tied` | SNP | Genome succeeded; NM was tied — genome result used |
-| `NM_N/A` | SNP | Genome succeeded; NM comparison not applicable — no TopGenomicSeq alignment at the winning locus (includes all `probe_only` markers) |
+| `NM_N/A` | SNP / Insertion | One method succeeded; the other was unavailable or inconclusive. **SNP:** genome succeeded; no TopSeq alignment so NM was unavailable (includes all `probe_only` markers). **Insertion:** NM determined Ref/Alt; genome was consulted but did not confirm a swap — NM's assignment stands. |
 | `NM_only` | SNP | Genome lookup failed; NM result used |
-| `NM_validated` | Indel | Deletion Ref sequence confirmed by genome fetch |
-| `NM_mismatch` | Indel | Deletion Ref sequence did not match genome fetch, or genome fetch failed — marker removed by design-conflict filter |
-| `NM_corrected` | Indel | Insertion: NM initially assigned Ref/Alt backwards; genome base confirmed swap |
-| `NM_N/A` | Indel | Insertion ref (`gref=""`) — genome validation not applicable |
+| `NM_validated` | Deletion | Deletion Ref sequence confirmed by genome fetch |
+| `NM_mismatch` | Deletion | Deletion Ref sequence did not match genome fetch — marker removed by the design-conflict filter in `qc_filter.py` |
+| `NM_corrected` | Insertion | NM initially assigned Ref/Alt backwards; genome base at the variant position confirmed the swap |
 | `ambiguous` | SNP / Indel | Both methods failed (incl. NM tie for indels) — Chr=0 |
 
-Insertion refs (`gref = ""`) always pass without genome validation. `NM_mismatch` and `NM_unmatch` are distinct: `NM_mismatch` is indel-only and triggers removal; `NM_unmatch` is SNP-only and the marker is kept using the genome result.
+`NM_mismatch` and `NM_unmatch` are distinct: `NM_mismatch` is deletion-only and triggers removal by the design-conflict filter; `NM_unmatch` is SNP-only and the marker is kept using the genome result.
 
 **What is NM?** `NM` is the `NM:i:<n>` edit-distance tag written by minimap2 into each SAM record. It counts mismatches and gap opens between the aligned sequence and the reference — it is **not** derived from CIGAR walking. CIGAR walking is used only for coordinate computation.
 
