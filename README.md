@@ -431,13 +431,13 @@ The genome result is used when available. Agreement between the two methods is r
 | Value | Context | Meaning |
 |---|---|---|
 | `NM_match` | SNP | Genome lookup and NM comparison both succeeded and agree |
-| `NM_unmatch` | SNP | Both succeeded but disagree — genome result used (flag for QC; inspect for nearby variants) |
+| `NM_N/A` | SNP / Insertion | One method succeeded; the other was unavailable or inconclusive (Not tie). **SNP:** genome succeeded; no TopSeq alignment, so NM was unavailable (includes all `probe_only` markers). **Insertion:** NM determined Ref/Alt; genome was consulted, and confirmed no swap, but can not confirm the insertion |
 | `NM_tied` | SNP | Genome succeeded; NM was tied — genome result used |
-| `NM_N/A` | SNP / Insertion | One method succeeded; the other was unavailable or inconclusive. **SNP:** genome succeeded; no TopSeq alignment so NM was unavailable (includes all `probe_only` markers). **Insertion:** NM determined Ref/Alt; genome was consulted but did not confirm a swap — NM's assignment stands. |
 | `NM_only` | SNP | Genome lookup failed; NM result used |
+| `NM_unmatch` | SNP / Insertion | Both succeeded but disagree — genome result used (flag for QC; inspect for nearby variants) |
+| `NM_corrected` | Insertion | NM initially assigned Ref/Alt backwards; genome base at the variant position confirmed the swap |
 | `NM_validated` | Deletion | Deletion Ref sequence confirmed by genome fetch |
 | `NM_mismatch` | Deletion | Deletion Ref sequence did not match genome fetch — marker removed by the design-conflict filter in `qc_filter.py` |
-| `NM_corrected` | Insertion | NM initially assigned Ref/Alt backwards; genome base at the variant position confirmed the swap |
 | `ambiguous` | SNP / Indel | Both methods failed (incl. NM tie for indels) — Chr=0 |
 
 `NM_mismatch` and `NM_unmatch` are distinct: `NM_mismatch` is deletion-only and triggers removal by the design-conflict filter; `NM_unmatch` is SNP-only and the marker is kept using the genome result.
