@@ -117,11 +117,14 @@ The pipeline script is a wrapper for 3 steps:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--mapq-topseq` | `30` | Minimum MAPQ for TopGenomicSeq alignments; `0` disables the filter and allows `probe_only` markers to pass |
-| `--mapq-probe` | `0` (disabled) | Minimum MAPQ for probe alignments; `0` disables the filter and allows `topseq_only` markers to pass |
-| `--coord-delta` | `-1` (disabled) | Remove markers where `\|probe_coord − CIGAR_coord\| > N` and all `topseq_only` markers |
-| `--exclude-indels` | off | Remove all indel markers from outputs (VCF, BIM, map file) |
-| `--require-strand-agreement` | off | Remove markers where probe strand disagrees with expected orientation |
+| `--coordinate-role` | `Moderate` | `High`=topseq_n_probe only; `Moderate`=+topseq_only; `Low`=+probe_only |
+| `--tie-label` | `resolved` | `unique`; `resolved`=+\*\_resolved; `avoid_scaffolds`=+scaffold_resolved |
+| `--refalt-conf` | `Moderate` | `High`=NM_match+NM_validated; `Moderate`=+NM_N/A+NM_tied; `Low`=+NM_only+NM_unmatch+NM_corrected |
+| `--mapq-topseq` | `30` | Min MAPQ for TopGenomicSeq alignments (0–60); probe_only markers exempt |
+| `--mapq-probe` | `0` (disabled) | Min MAPQ for probe alignments (0–60); topseq_only markers exempt |
+| `--coord-delta` | `-1` (disabled) | Remove markers where `\|probe_coord − CIGAR_coord\| > N`; topseq_only/probe_only (CoordDelta=−1) pass through |
+| `--keep-indels` | off | Include indel markers in outputs (default: excluded) |
+| `--keep-polymorphic` | off | Keep markers at polymorphic positions (default: removed) |
 
 For HPC clusters:
 
@@ -452,14 +455,16 @@ Filters applied sequentially by `qc_filter.py`; `QC_Report.txt` records counts a
 
 | Stage | Filter condition | Flag |
 |---|---|---|
-| 1. Unmapped | `Strand_{assembly} == N/A` | always on |
-| 2. MAPQ | `MAPQ_TopGenomicSeq < --mapq-topseq` (probe_only markers exempt); `MAPQ_Probe < --mapq-probe` (topseq_only markers exempt) | `--mapq-topseq 30`; `--mapq-probe 0` (disabled) |
-| 2.5. CoordDelta *(optional)* | `CoordDelta > N` OR `anchor_{assembly} == "topseq_only"` | `--coord-delta N` (N ≥ 0); disabled by default |
-| 3. Strand agreement *(optional)* | `StrandAgreementAsExpected == False` | `--require-strand-agreement`; disabled by default |
-| 4. Design conflict | SNPs: strand-normalised Ref ≠ genome ref base at MapInfo; deletions: pysam fetch of ref ≠ gref; insertions: always pass | always on |
-| 5. Exclude indels *(optional)* | Remove all indel markers | `--exclude-indels`; disabled by default |
-| 6. Polymorphic sites | Multiple Ref/Alt assignments at the same Chr:Pos | always on |
-| 7. Consistency | SAM record count at Chr ≠ 3 (TopSeq_A + TopSeq_B + probe) | requires SAM files |
+| 1. Failed markers | `Strand_{assembly} == N/A` (unmapped + ambiguous) | always on |
+| 2. Design conflict | SNPs: strand-normalised Ref ≠ genome ref; deletions: pysam fetch mismatch; insertions: always pass | always on |
+| 3. Coordinate role | `anchor_{assembly}` level: High=topseq_n_probe only; Moderate=+topseq_only; Low=+probe_only; N/A always excluded | `--coordinate-role` default `Moderate` |
+| 4. Tie label | `tie_{assembly}` level: unique; resolved=+\*\_resolved; avoid_scaffolds=+scaffold_resolved; ambiguous always excluded | `--tie-label` default `resolved` |
+| 5. RefAlt confidence | `RefAltMethodAgreement_{assembly}` level: High; Moderate=+NM_N/A+NM_tied; Low=+NM_only+NM_unmatch+NM_corrected; NM_mismatch+ambiguous always excluded | `--refalt-conf` default `Moderate` |
+| 6. MAPQ_TopGenomicSeq | `MAPQ_TopGenomicSeq < N`; probe_only markers (NaN) exempt | `--mapq-topseq 30` (0–60) |
+| 7. MAPQ_Probe | `MAPQ_Probe < N`; topseq_only markers (NaN) exempt | `--mapq-probe 0` (disabled; 0–60) |
+| 8. CoordDelta | `CoordDelta > N`; topseq_only and probe_only (CoordDelta=−1) pass through | `--coord-delta N` (N ≥ 0); disabled by default |
+| 9. Indels | Remove all indel markers | off by default; pass `--keep-indels` to include |
+| 10. Polymorphic | Multiple Ref/Alt assignments at same Chr:Pos | always on; `--keep-polymorphic` to disable |
 
 > The CoordDelta filter explicitly removes `topseq_only` markers (via `anchor_{assembly} == "topseq_only"`) whenever `--coord-delta` is active, because they carry `CoordDelta=−1` and would otherwise numerically pass any threshold ≥ 0.
 
@@ -467,19 +472,14 @@ For Equine80select v2 → EquCab3 (default `--mapq-topseq 30`, no `--coord-delta
 
 ```
 Input markers:                84,319
-After unmapped filter:        83,923   (−396)
-After MAPQ filter (≥30):      82,406   (−1,517)
-After design conflict:        82,178   (−228)
-After polymorphic filter:     82,147   (−31)
-After consistency filter:     81,491   (−656)
+Failed markers (unmapped + ambiguous):  83,923   (−396)
+After design conflict:        [varies by --coordinate-role/--tie-label/--refalt-conf defaults]
+...
+Final markers:                [see qc/QC_Report.txt for current counts]
 ```
 
-With `--coord-delta 0` (removes CoordDelta>0 and all topseq_only):
+> **Note:** Example counts from previous versions are no longer valid. The consistency filter has been removed, indels are now excluded by default (pass `--keep-indels` to include), and three new dimension-based filters (Stages 3–5) are applied before MAPQ. Run the pipeline and check `qc/QC_Report.txt` for current counts.
 
-```
-After CoordDelta filter:      81,479   (−927: 186 CoordDelta>0, 741 topseq_only)
-Final markers:                81,347
-```
 
 ---
 
