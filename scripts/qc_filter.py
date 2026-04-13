@@ -67,66 +67,13 @@ def parse_args():
                    help="Directory for intermediate files (default: output-dir)")
     p.add_argument("--prefix", default=None,
                    help="Output file prefix (default: derived from input filename)")
-    p.add_argument("--topseq-sam", default=None,
-                   help="Path to temp_topseq.sam from remap step (for consistency check)")
-    p.add_argument("--probe-sam", default=None,
-                   help="Path to temp_probe.sam from remap step (for consistency check)")
     p.add_argument("--coord-delta", type=int, default=-1,
                    help="Maximum allowed CoordDelta (|probe_coord - CIGAR_coord|). "
                         "-1 = disabled (default). Any value >= 0 removes markers with "
-                        "CoordDelta > threshold and all topseq_only markers.")
-    p.add_argument("--require-strand-agreement", action="store_true", default=False,
-                   help="Remove markers where probe strand does not agree with IlmnStrand "
-                        "expectation (StrandAgreementAsExpected=False). Default: disabled.")
-    p.add_argument("--exclude-indels", action="store_true", default=False,
-                   help="Remove indel markers from all outputs (default: False = include indels). "
-                        "Indels are identified by an empty-string allele in Ref or Alt.")
+                        "CoordDelta > threshold. topseq_only and probe_only markers "
+                        "(CoordDelta=-1) pass through.")
     return p.parse_args()
 
-
-# ── CONSISTENCY CHECK ────────────────────────────────────────────────────────
-
-def get_consistent_snps(topseq_sam_path, probe_sam_path):
-    """
-    Replicates the existing consistency logic:
-      For each SNP, we expect exactly 3 SAM records all mapping to the same chromosome:
-        - topseq_A, topseq_B (from temp_topseq.sam, with _A/_B suffix stripped)
-        - probe (from temp_probe.sam)
-      SNPs where any (name, chromosome) pair has a count != 3 are flagged as inconsistent.
-
-    This mirrors the original bash logic:
-      cut -f1,3 | sort | uniq -c | awk '{if($1!=3)print}'
-
-    Returns a set of inconsistent SNP names.
-    """
-    counts = Counter()
-
-    with open(topseq_sam_path) as f:
-        for line in f:
-            if line.startswith("@") or line.startswith("[M"):
-                continue
-            cols = line.split("\t")
-            flag = int(cols[1])
-            if flag & 4:
-                continue
-            # Strip _A / _B suffix; key is (name, chromosome) to detect cross-chrom splits
-            name = re.sub(r"_[AB]$", "", cols[0])
-            chrom = cols[2]
-            counts[(name, chrom)] += 1
-
-    with open(probe_sam_path) as f:
-        for line in f:
-            if line.startswith("@") or line.startswith("[M"):
-                continue
-            cols = line.split("\t")
-            flag = int(cols[1])
-            if flag & 4:
-                continue
-            chrom = cols[2]
-            counts[(cols[0], chrom)] += 1
-
-    # A marker is inconsistent if any (name, chrom) pair has count != 3
-    return {name for (name, chrom), cnt in counts.items() if cnt != 3}
 
 
 # ── VCF GENERATION ───────────────────────────────────────────────────────────
@@ -331,17 +278,6 @@ def apply_probe_mapq_filter(df, threshold):
     probe_fail = probe_mapq.notna() & (probe_mapq < threshold)
     return df[~probe_fail]
 
-
-# ── STRAND AGREEMENT FILTER ──────────────────────────────────────────────────
-
-def apply_strand_agreement_filter(df, assembly):
-    """Return df with rows removed where StrandAgreementAsExpected is 'False'.
-
-    Rows with 'True' or 'N/A' (topseq_only or unknown orientation) are kept.
-    Raises KeyError if the expected column is absent.
-    """
-    col = f"StrandAgreementAsExpected_{assembly}"
-    return df[df[col] != "False"]
 
 
 # ── INDEL DESIGN CONFLICT CHECK ──────────────────────────────────────────────
