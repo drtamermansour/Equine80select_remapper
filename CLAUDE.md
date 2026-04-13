@@ -188,43 +188,30 @@ The anchor and tie columns are always populated to reflect the actual path taken
 
 ## `scripts/qc_filter.py`
 
-**Input:** Remapped CSV + reference FASTA + `vcf_contigs.txt` + SAM files
+**Input:** Remapped CSV + reference FASTA + `vcf_contigs.txt`
 **Output:** Filtered VCFs, BIM, final map, `QC_Report.txt`, `remap_assessment/` — all written to the `qc/` subfolder of `--output-dir`
 
 ### Filter cascade
 
-1. `Strand_{assembly} == 'N/A'` → unmapped **or ambiguous**, remove
-2. `MAPQ_TopGenomicSeq < --mapq-topseq` → low-confidence, remove
-3. *(optional)* `CoordDelta > --coord-delta` OR `anchor_{assembly} == "topseq_only"` → remove; disabled by default (`--coord-delta -1`)
-4. *(optional)* `StrandAgreementAsExpected == False` → remove; disabled by default (`--require-strand-agreement`)
-5. Design conflict:
-   - **SNPs**: strand-normalised Ref ≠ single-base genome Ref from bcftools → remove
-   - **Indels (deletion ref)**: pysam fetch of `len(gref)` bases at MapInfo ≠ gref → remove
-   - **Indels (insertion ref, `gref == ""`)**: always pass (nothing to verify against reference)
-6. *(optional)* `--exclude-indels` → remove all indel markers from output; disabled by default
-7. Multiple Ref/Alt assignments at same Chr:Pos → polymorphic, remove
-8. Count of SAM records (topseq_A + topseq_B + probe) ≠ 3 → inconsistent, remove
+| Stage | Filter condition | Flag |
+|---|---|---|
+| 1. Failed markers | `Strand_{assembly} == N/A` (unmapped + ambiguous) | always on |
+| 2. Design conflict | SNPs: strand-normalised Ref ≠ genome Ref; deletions: pysam fetch mismatch; insertions: always pass | always on |
+| 3. Coordinate role | `anchor_{assembly}` level: High=topseq_n_probe only; Moderate=+topseq_only; Low=+probe_only; N/A always excluded | `--coordinate-role` default `Moderate` |
+| 4. Tie label | `tie_{assembly}` level: unique; resolved=+*_resolved (not scaffold); avoid_scaffolds=+scaffold_resolved; ambiguous always excluded | `--tie-label` default `resolved` |
+| 5. RefAlt confidence | `RefAltMethodAgreement_{assembly}` level: High=NM_match+NM_validated; Moderate=+NM_N/A,NM_tied; Low=+NM_only,NM_unmatch,NM_corrected; NM_mismatch+ambiguous always excluded | `--refalt-conf` default `Moderate` |
+| 6. MAPQ_TopGenomicSeq | `MAPQ_TopGenomicSeq < N`; probe_only markers (NaN) exempt | `--mapq-topseq 30` (0–60) |
+| 7. MAPQ_Probe | `MAPQ_Probe < N`; topseq_only markers (NaN) exempt | `--mapq-probe 0` (disabled; 0–60) |
+| 8. CoordDelta | `CoordDelta > N`; topseq_only and probe_only (CoordDelta=−1) pass through | `--coord-delta N` (N ≥ 0; disabled by default) |
+| 9. Indels | Remove all indel markers | off by default; pass `--keep-indels` to include |
+| 10. Polymorphic | Multiple Ref/Alt assignments at same Chr:Pos | always on; `--keep-polymorphic` to disable |
 
-**VCF and BIM indel encoding:** `pos = MapInfo − 1`; `REF = anchor + gref`; `ALT = anchor + galt` (anchor base fetched from FASTA at `MapInfo − 1`; deletion has `galt = ""`; insertion has `gref = ""`). Consistency filter still applies to indels — count is 3 (topseq_A + topseq_B + probe) because all indel markers are Infinium II with one probe.
+**VCF and BIM indel encoding:** `pos = MapInfo − 1`; `REF = anchor + gref`; `ALT = anchor + galt` (anchor base fetched from FASTA at `MapInfo − 1`; deletion has `galt = ""`; insertion has `gref = ""`).
 
-### Expected counts (v2 manifest → EquCab3, default `--mapq-topseq 30`, no `--coord-delta`)
-```
-Input:                    84,319
-After Strand=N/A (unmapped+ambiguous): 83,923   (-396)
-After MAPQ (>=30):        82,406   (-1,517)
-After design conflict:    82,178   (-228)
-After polymorphic:        82,147   (-31)
-After consistency:        81,491   (-656)
-```
-
-With `--coord-delta 0` (removes CoordDelta>0 and all topseq_only):
-```
-After CoordDelta filter:  81,479   (-927: 186 CoordDelta>0, 741 topseq_only)
-Final markers:            81,347
-```
+**Note:** The consistency filter (SAM record count check) has been removed. Indels are now excluded by default. Expected counts from the old pipeline design are no longer valid — see `qc/QC_Report.txt` in the output directory for current counts.
 
 ### CLI flags
-`-i`, `-r`, `-v` (vcf_contigs), `-a`, `-o`, `--mapq-topseq`, `--mapq-probe`, `--coord-delta` (default -1), `--require-strand-agreement`, `--exclude-indels` (default: indels included), `--temp-dir`, `--prefix`, `--topseq-sam`, `--probe-sam`
+`-i`, `-r`, `-v` (vcf_contigs), `-a`, `-o`, `--coordinate-role` (default `Moderate`), `--tie-label` (default `resolved`), `--refalt-conf` (default `Moderate`), `--mapq-topseq` (0–60, default 30), `--mapq-probe` (0–60, default 0), `--coord-delta` (default -1), `--keep-indels`, `--keep-polymorphic`, `--temp-dir`, `--prefix`
 
 ---
 
@@ -255,7 +242,7 @@ pytest tests/ -v        # 159 tests (~7 min including integration tests)
 ```
 
 - `tests/test_remap_manifest.py` — 86 tests: `parse_topseq_sam`, `is_placed_chromosome`, `select_best_pair`, `determine_ref_alt`, `parse_cigar_to_ref_pos`, `compute_qcov`, `compute_soft_clip_frac`, `_get_as`, `reverse_complement`, `probe_topseq_orientation`, `compute_probe_strand_agreement`, `extract_candidates`, CIGAR-override-for-indels contract
-- `tests/test_qc_filter.py` — 30 tests: `apply_probe_mapq_filter`, `apply_strand_agreement_filter`, `strand_normalize`, `check_deletion_ref_match`, `make_anchor_alleles`, `apply_exclude_indels_filter`
+- `tests/test_qc_filter.py` — 46 tests: `apply_probe_mapq_filter`, `strand_normalize`, `check_deletion_ref_match`, `make_anchor_alleles`, `apply_exclude_indels_filter`, `apply_coordinate_role_filter`, `apply_tie_label_filter`, `apply_refalt_conf_filter`, `format_three_d_table`, MAPQ range validation
 - `tests/test_benchmark_compare.py` — 46 tests: unit + integration for `benchmark_compare.py`; two integration tests require real data in `backup_original/` and `results_E80selv2_to_equCab3/`
 
 ---
@@ -296,7 +283,7 @@ chr  pos  snpID  SNP_alleles  genomic_alleles  SNP_ref_allele  genomic_ref_allel
 
 2. **Resume after step 3 failure.** Re-run `run_pipeline.sh` with `--resume` to skip minimap2. Temp SAM files are preserved until the full pipeline completes successfully.
 
-3. **Consistency filter needs SAM files.** If calling `qc_filter.py` directly after a completed run (temp files cleaned up), pass `--topseq-sam` and `--probe-sam` explicitly or the filter is skipped with a warning.
+3. **Consistency filter has been removed.** `qc_filter.py` no longer checks SAM record counts or requires SAM files. The `--topseq-sam` and `--probe-sam` flags no longer exist.
 
 4. **Chr column is always a string.** Use `dtype={col_chr: str}` when loading CSVs. Unplaced contigs like `Un_NW_*` are valid chromosome values.
 
@@ -310,7 +297,7 @@ chr  pos  snpID  SNP_alleles  genomic_alleles  SNP_ref_allele  genomic_ref_allel
 
 9. **`resolve_ref_from_genome` requires `strand`.** The function now complements allele characters before comparing against the forward-strand genome base when `strand == "-"`. All call sites must pass the alignment strand. Omitting it caused silent `None` returns for minus-strand NM ties.
 
-10. **CoordDelta filter uses `anchor_{assembly}`, not `MappingStatus_{assembly}`.** `qc_filter.py --coord-delta` now reads `anchor_{assembly} == "topseq_only"` to identify markers to exclude. Old CSVs without `anchor_{assembly}` will skip the filter with a warning.
+10. **CoordDelta filter no longer removes topseq_only or probe_only.** `qc_filter.py --coord-delta N` only removes markers where `CoordDelta > N`. topseq_only and probe_only markers have `CoordDelta = −1` and pass through any ≥ 0 threshold naturally. Old CSVs without `anchor_{assembly}` will skip the filter with a warning.
 
 ---
 
