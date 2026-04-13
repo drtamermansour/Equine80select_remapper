@@ -237,17 +237,16 @@ def test_exclude_indels_mixed_dataset():
 # ── CoordDelta filter uses anchor_{assembly} ──────────────────────────────────
 
 def test_coord_delta_filter_uses_anchor_column():
-    """CoordDelta filter identifies topseq_only via anchor_{assembly}, not MappingStatus."""
+    """CoordDelta filter no longer removes topseq_only; only exceeds-delta rows dropped."""
     import pandas as pd
 
-    # Minimal DataFrame: one normal marker and one topseq_only marker
     df = pd.DataFrame({
-        "CoordDelta_test":   [0, -1],
-        "anchor_test":       ["topseq_n_probe", "topseq_only"],
+        "CoordDelta_test": [5, -1, -1],
+        "anchor_test":     ["topseq_n_probe", "topseq_only", "probe_only"],
     })
-    # topseq_only should be removed when coord_delta filter is active (threshold=0)
-    is_topseq_only = df["anchor_test"] == "topseq_only"
-    exceeds_delta  = df["CoordDelta_test"] > 0
-    result = df[~exceeds_delta & ~is_topseq_only]
-    assert len(result) == 1
-    assert result.iloc[0]["anchor_test"] == "topseq_n_probe"
+    # Only row with CoordDelta=5 exceeds threshold=2.
+    # topseq_only and probe_only (CoordDelta=-1) pass through.
+    exceeds_delta = df["CoordDelta_test"] > 2
+    result = df[~exceeds_delta]
+    assert len(result) == 2
+    assert set(result["anchor_test"]) == {"topseq_only", "probe_only"}
