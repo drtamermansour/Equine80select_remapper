@@ -12,6 +12,10 @@ from qc_filter import (
     check_deletion_ref_match,
     make_anchor_alleles,
     apply_exclude_indels_filter,
+    apply_coordinate_role_filter,   # Task 5
+    apply_tie_label_filter,          # Task 5
+    apply_refalt_conf_filter,        # Task 5
+    format_three_d_table,            # Task 5
 )
 
 
@@ -250,3 +254,176 @@ def test_coord_delta_filter_uses_anchor_column():
     result = df[~exceeds_delta]
     assert len(result) == 2
     assert set(result["anchor_test"]) == {"topseq_only", "probe_only"}
+
+
+# ── apply_coordinate_role_filter ──────────────────────────────────────────────
+
+def _anchor_df(*values):
+    return pd.DataFrame({"anchor_testasm": list(values)})
+
+
+def test_coord_role_high_keeps_only_topseq_n_probe():
+    df = _anchor_df("topseq_n_probe", "topseq_only", "probe_only", "N/A")
+    result = apply_coordinate_role_filter(df, "testasm", "High")
+    assert list(result["anchor_testasm"]) == ["topseq_n_probe"]
+
+
+def test_coord_role_moderate_accepts_topseq_only():
+    df = _anchor_df("topseq_n_probe", "topseq_only", "probe_only", "N/A")
+    result = apply_coordinate_role_filter(df, "testasm", "Moderate")
+    assert set(result["anchor_testasm"]) == {"topseq_n_probe", "topseq_only"}
+
+
+def test_coord_role_low_accepts_probe_only():
+    df = _anchor_df("topseq_n_probe", "topseq_only", "probe_only", "N/A")
+    result = apply_coordinate_role_filter(df, "testasm", "Low")
+    assert set(result["anchor_testasm"]) == {"topseq_n_probe", "topseq_only", "probe_only"}
+
+
+def test_coord_role_na_always_excluded():
+    for role in ("High", "Moderate", "Low"):
+        result = apply_coordinate_role_filter(_anchor_df("N/A"), "testasm", role)
+        assert len(result) == 0, f"N/A not excluded at role={role}"
+
+
+# ── apply_tie_label_filter ─────────────────────────────────────────────────────
+
+_ALL_TIES = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
+             "CoordDelta_resolved", "scaffold_resolved", "ambiguous", "N/A"]
+
+
+def _tie_df(*values):
+    return pd.DataFrame({"tie_testasm": list(values)})
+
+
+def test_tie_unique_keeps_only_unique():
+    result = apply_tie_label_filter(_tie_df(*_ALL_TIES), "testasm", "unique")
+    assert list(result["tie_testasm"]) == ["unique"]
+
+
+def test_tie_resolved_excludes_scaffold_resolved():
+    """resolved does NOT include scaffold_resolved — that requires avoid_scaffolds."""
+    result = apply_tie_label_filter(_tie_df(*_ALL_TIES), "testasm", "resolved")
+    assert set(result["tie_testasm"]) == {
+        "unique", "AS_resolved", "dAS_resolved", "NM_resolved", "CoordDelta_resolved"
+    }
+
+
+def test_tie_avoid_scaffolds_adds_scaffold_resolved():
+    result = apply_tie_label_filter(
+        _tie_df("unique", "scaffold_resolved", "ambiguous", "N/A"),
+        "testasm", "avoid_scaffolds"
+    )
+    assert set(result["tie_testasm"]) == {"unique", "scaffold_resolved"}
+
+
+def test_tie_ambiguous_always_excluded():
+    for label in ("unique", "resolved", "avoid_scaffolds"):
+        result = apply_tie_label_filter(_tie_df("ambiguous"), "testasm", label)
+        assert len(result) == 0, f"ambiguous not excluded at label={label}"
+
+
+# ── apply_refalt_conf_filter ───────────────────────────────────────────────────
+
+_ALL_REFALT = [
+    "NM_match", "NM_unmatch", "NM_validated", "NM_mismatch",
+    "NM_corrected", "NM_tied", "NM_N/A", "NM_only", "ambiguous", "N/A",
+]
+
+
+def _refalt_df(*values):
+    return pd.DataFrame({"RefAltMethodAgreement_testasm": list(values)})
+
+
+def test_refalt_high_keeps_nm_match_and_validated():
+    result = apply_refalt_conf_filter(_refalt_df(*_ALL_REFALT), "testasm", "High")
+    assert set(result["RefAltMethodAgreement_testasm"]) == {"NM_match", "NM_validated"}
+
+
+def test_refalt_moderate_adds_nm_na_and_nm_tied():
+    result = apply_refalt_conf_filter(_refalt_df(*_ALL_REFALT), "testasm", "Moderate")
+    assert set(result["RefAltMethodAgreement_testasm"]) == {
+        "NM_match", "NM_validated", "NM_N/A", "NM_tied"
+    }
+
+
+def test_refalt_low_adds_nm_only_nm_unmatch_nm_corrected():
+    result = apply_refalt_conf_filter(_refalt_df(*_ALL_REFALT), "testasm", "Low")
+    assert set(result["RefAltMethodAgreement_testasm"]) == {
+        "NM_match", "NM_validated", "NM_N/A", "NM_tied",
+        "NM_only", "NM_unmatch", "NM_corrected",
+    }
+
+
+def test_refalt_nm_mismatch_always_excluded():
+    for conf in ("High", "Moderate", "Low"):
+        result = apply_refalt_conf_filter(_refalt_df("NM_mismatch"), "testasm", conf)
+        assert len(result) == 0, f"NM_mismatch not excluded at conf={conf}"
+
+
+def test_refalt_ambiguous_always_excluded():
+    for conf in ("High", "Moderate", "Low"):
+        result = apply_refalt_conf_filter(_refalt_df("ambiguous"), "testasm", conf)
+        assert len(result) == 0, f"ambiguous not excluded at conf={conf}"
+
+
+# ── MAPQ range validation (0–60) ───────────────────────────────────────────────
+
+def _run_parse_args(extra_args):
+    """Helper: run parse_args in a subprocess and return CompletedProcess."""
+    import subprocess, sys
+    cmd = (
+        f"import sys; sys.argv=['q','-i','x','-r','x','-v','x','-a','x',"
+        f"{extra_args}]; "
+        f"from qc_filter import parse_args; a=parse_args(); "
+        f"print(a.mapq_topseq, a.mapq_probe)"
+    )
+    return subprocess.run([sys.executable, "-c", cmd], capture_output=True, text=True)
+
+
+def test_mapq_topseq_rejects_negative():
+    assert _run_parse_args("'--mapq-topseq','-1'").returncode != 0
+
+
+def test_mapq_topseq_rejects_above_60():
+    assert _run_parse_args("'--mapq-topseq','61'").returncode != 0
+
+
+def test_mapq_topseq_accepts_0_and_60():
+    proc = _run_parse_args("'--mapq-topseq','0','--mapq-probe','60'")
+    assert proc.returncode == 0
+    assert "0 60" in proc.stdout
+
+
+def test_mapq_probe_rejects_negative():
+    assert _run_parse_args("'--mapq-probe','-1'").returncode != 0
+
+
+# ── format_three_d_table ───────────────────────────────────────────────────────
+
+def test_three_d_table_contains_header_and_totals():
+    three_d = {("topseq_n_probe", "unique"): {"NM_*": 10, "ambiguous": 0, "N/A": 0}}
+    output = format_three_d_table(three_d)
+    assert "anchor" in output
+    assert "tie" in output
+    assert "Total" in output
+    assert "10" in output
+
+
+def test_three_d_table_skips_zero_rows():
+    three_d = {
+        ("topseq_n_probe", "unique"):     {"NM_*": 5, "ambiguous": 0, "N/A": 0},
+        ("topseq_only",    "AS_resolved"):{"NM_*": 0, "ambiguous": 0, "N/A": 0},
+    }
+    output = format_three_d_table(three_d)
+    assert "topseq_only" not in output
+
+
+def test_three_d_table_grand_total_correct():
+    three_d = {
+        ("topseq_n_probe", "unique"):      {"NM_*": 3, "ambiguous": 1, "N/A": 2},
+        ("topseq_only",    "NM_resolved"): {"NM_*": 4, "ambiguous": 0, "N/A": 0},
+    }
+    output = format_three_d_table(three_d)
+    # Grand total = 3+1+2+4 = 10
+    assert "10" in output
