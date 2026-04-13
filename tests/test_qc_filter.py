@@ -371,9 +371,11 @@ def test_refalt_ambiguous_always_excluded():
 
 def _run_parse_args(extra_args):
     """Helper: run parse_args in a subprocess and return CompletedProcess."""
-    import subprocess, sys
+    import subprocess, sys, os
+    scripts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
     cmd = (
-        f"import sys; sys.argv=['q','-i','x','-r','x','-v','x','-a','x',"
+        f"import sys; sys.path.insert(0, {scripts_dir!r}); "
+        f"sys.argv=['q','-i','x','-r','x','-v','x','-a','x',"
         f"{extra_args}]; "
         f"from qc_filter import parse_args; a=parse_args(); "
         f"print(a.mapq_topseq, a.mapq_probe)"

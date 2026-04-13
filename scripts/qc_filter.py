@@ -52,6 +52,19 @@ def complement(seq):
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+def _mapq_int(value):
+    """argparse type that validates MAPQ is an integer in [0, 60]."""
+    try:
+        ivalue = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer.")
+    if not (0 <= ivalue <= 60):
+        raise argparse.ArgumentTypeError(
+            f"MAPQ value {ivalue} is out of range [0, 60]."
+        )
+    return ivalue
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="QC filter and output generation for remapped manifests.")
     p.add_argument("-i", "--input",    required=True, help="Remapped manifest CSV (from remap_manifest.py)")
@@ -59,10 +72,10 @@ def parse_args():
     p.add_argument("-v", "--vcf-contigs", required=True, help="VCF contig header file")
     p.add_argument("-a", "--assembly", default="new_assembly", help="Assembly name (must match remap_manifest.py -a)")
     p.add_argument("-o", "--output-dir", default=".", help="Output directory (default: current directory)")
-    p.add_argument("--mapq-topseq", type=int, default=30,
-                   help="Minimum MAPQ for TopGenomicSeq alignments (default: 30)")
-    p.add_argument("--mapq-probe", type=int, default=0,
-                   help="Minimum MAPQ for probe alignments when >0 (default: 0 = disabled)")
+    p.add_argument("--mapq-topseq", type=_mapq_int, default=30,
+                   help="Minimum MAPQ for TopGenomicSeq alignments (0–60, default: 30); probe_only exempt")
+    p.add_argument("--mapq-probe", type=_mapq_int, default=0,
+                   help="Minimum MAPQ for probe alignments (0–60, default: 0 = disabled); topseq_only exempt")
     p.add_argument("--temp-dir", default=None,
                    help="Directory for intermediate files (default: output-dir)")
     p.add_argument("--prefix", default=None,
@@ -72,6 +85,29 @@ def parse_args():
                         "-1 = disabled (default). Any value >= 0 removes markers with "
                         "CoordDelta > threshold. topseq_only and probe_only markers "
                         "(CoordDelta=-1) pass through.")
+    p.add_argument(
+        "--coordinate-role", choices=["High", "Moderate", "Low"], default="Moderate",
+        help="Minimum coordinate role: High=topseq_n_probe only; "
+             "Moderate=also allows topseq_only (default); Low=also allows probe_only."
+    )
+    p.add_argument(
+        "--tie-label", choices=["unique", "resolved", "avoid_scaffolds"], default="resolved",
+        help="Minimum tie resolution: unique; resolved=unique+*_resolved (default); "
+             "avoid_scaffolds=resolved+scaffold_resolved."
+    )
+    p.add_argument(
+        "--refalt-conf", choices=["High", "Moderate", "Low"], default="Moderate",
+        help="Minimum RefAlt confidence: High=NM_match+NM_validated; "
+             "Moderate=+NM_N/A+NM_tied (default); Low=+NM_only+NM_unmatch+NM_corrected."
+    )
+    p.add_argument(
+        "--keep-indels", action="store_true", default=False,
+        help="Keep indel markers in outputs (default: False = indels excluded)."
+    )
+    p.add_argument(
+        "--keep-polymorphic", action="store_true", default=False,
+        help="Keep markers at polymorphic positions (default: False = removed)."
+    )
     return p.parse_args()
 
 
@@ -345,6 +381,127 @@ def apply_exclude_indels_filter(df):
     non-empty characters; indels have one empty-string allele.
     """
     return df[(df["_gref"] != "") & (df["_galt"] != "")]
+
+
+# ── COORDINATE ROLE FILTER ───────────────────────────────────────────────────
+
+def apply_coordinate_role_filter(df, assembly, role):
+    """Keep rows whose anchor_{assembly} meets the required role.
+
+    N/A is always excluded (unmapped; already removed by Stage 1, but guarded here).
+    High:     topseq_n_probe only
+    Moderate: topseq_n_probe + topseq_only  (default)
+    Low:      topseq_n_probe + topseq_only + probe_only
+    """
+    col = f"anchor_{assembly}"
+    allowed = {"topseq_n_probe"}
+    if role in ("Moderate", "Low"):
+        allowed.add("topseq_only")
+    if role == "Low":
+        allowed.add("probe_only")
+    return df[df[col].isin(allowed)]
+
+
+# ── TIE LABEL FILTER ─────────────────────────────────────────────────────────
+
+_TIE_RESOLVED = frozenset([
+    "unique", "AS_resolved", "dAS_resolved", "NM_resolved", "CoordDelta_resolved",
+])
+_TIE_AVOID_SCAFFOLDS = _TIE_RESOLVED | frozenset(["scaffold_resolved"])
+
+
+def apply_tie_label_filter(df, assembly, label):
+    """Keep rows whose tie_{assembly} meets the required label.
+
+    tie=ambiguous is always excluded.
+    unique:          unique only
+    resolved:        unique + AS/dAS/NM/CoordDelta_resolved  (default)
+    avoid_scaffolds: resolved + scaffold_resolved
+    """
+    col = f"tie_{assembly}"
+    if label == "unique":
+        allowed = {"unique"}
+    elif label == "resolved":
+        allowed = _TIE_RESOLVED
+    elif label == "avoid_scaffolds":
+        allowed = _TIE_AVOID_SCAFFOLDS
+    else:
+        raise ValueError(f"Unknown tie label: {label!r}.")
+    return df[df[col].isin(allowed)]
+
+
+# ── REFALT CONFIDENCE FILTER ──────────────────────────────────────────────────
+
+_REFALT_HIGH     = frozenset(["NM_match", "NM_validated"])
+_REFALT_MODERATE = _REFALT_HIGH | frozenset(["NM_N/A", "NM_tied"])
+_REFALT_LOW      = _REFALT_MODERATE | frozenset(["NM_only", "NM_unmatch", "NM_corrected"])
+
+
+def apply_refalt_conf_filter(df, assembly, conf):
+    """Keep rows whose RefAltMethodAgreement_{assembly} meets the required confidence.
+
+    NM_mismatch and ambiguous are always excluded.
+    High:     NM_match, NM_validated
+    Moderate: High + NM_N/A, NM_tied  (default)
+    Low:      Moderate + NM_only, NM_unmatch, NM_corrected
+    """
+    col = f"RefAltMethodAgreement_{assembly}"
+    if conf == "High":
+        allowed = _REFALT_HIGH
+    elif conf == "Moderate":
+        allowed = _REFALT_MODERATE
+    elif conf == "Low":
+        allowed = _REFALT_LOW
+    else:
+        raise ValueError(f"Unknown refalt conf: {conf!r}.")
+    return df[df[col].isin(allowed)]
+
+
+# ── 3D TABLE FORMATTER ───────────────────────────────────────────────────────
+
+def format_three_d_table(three_d):
+    """Format a 3-Dimension Summary (anchor × tie × RefAlt bucket) as a string.
+
+    three_d: dict mapping (anchor, tie) → {"NM_*": int, "ambiguous": int, "N/A": int}
+    """
+    ANCHOR_ORDER = ["topseq_n_probe", "topseq_only", "probe_only", "N/A"]
+    TIE_ORDER    = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
+                    "CoordDelta_resolved", "scaffold_resolved", "ambiguous", "N/A"]
+    W = 70
+
+    lines = [
+        "═" * W,
+        "3-Dimension Summary  (anchor × tie × Ref/Alt outcome)  — final markers",
+        f"  {'anchor / tie':<28} {'NM_*(Chr≠0)':>10} {'amb(Chr=0)':>10}"
+        f" {'N/A(Chr=0)':>10} {'Total':>8}",
+        "  " + "─" * 68,
+    ]
+
+    grand = {"NM_*": 0, "ambiguous": 0, "N/A": 0}
+    for anchor in ANCHOR_ORDER:
+        anchor_data = {t: d for (a, t), d in three_d.items() if a == anchor}
+        if sum(v for d in anchor_data.values() for v in d.values()) == 0:
+            continue
+        lines.append(f"  anchor={anchor}")
+        for tie in TIE_ORDER:
+            d = anchor_data.get(tie, {})
+            nm, amb, na = d.get("NM_*", 0), d.get("ambiguous", 0), d.get("N/A", 0)
+            if nm + amb + na == 0:
+                continue
+            lines.append(
+                f"    tie={tie:<24} {nm:>10,} {amb:>10,} {na:>10,} {nm+amb+na:>8,}"
+            )
+            grand["NM_*"] += nm
+            grand["ambiguous"] += amb
+            grand["N/A"] += na
+
+    total = sum(grand.values())
+    lines += [
+        "  " + "─" * 68,
+        f"  {'Total':<28} {grand['NM_*']:>10,} {grand['ambiguous']:>10,}"
+        f" {grand['N/A']:>10,} {total:>8,}",
+    ]
+    return "\n".join(lines)
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
