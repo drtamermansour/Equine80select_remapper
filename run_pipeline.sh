@@ -20,9 +20,12 @@
 #   -t / --threads       Threads for minimap2 (default: 4)
 #   --mapq-topseq        Min MAPQ for TopGenomicSeq alignments (default: 30)
 #   --mapq-probe         Min MAPQ for probe alignments when >0 (default: 0 = disabled)
-#   --coord-delta        Remove markers where |probe_coord − CIGAR_coord| > N and all topseq_only markers (default: -1 = disabled)
-#   --exclude-indels     Remove all indel markers from outputs (VCF, BIM, map file)
-#   --require-strand-agreement  Remove markers where probe strand disagrees with expected orientation
+#   --coord-delta        Remove markers where |probe_coord − CIGAR_coord| > N (default: -1 = disabled)
+#   --coordinate-role    Anchor threshold: High / Moderate (default) / Low
+#   --tie-label          Tie threshold: unique / resolved (default) / avoid_scaffolds
+#   --refalt-conf        RefAlt confidence: High / Moderate (default) / Low
+#   --keep-indels        Include indel markers in outputs (default: excluded)
+#   --keep-polymorphic   Keep polymorphic positions (default: removed)
 #   --keep-temp          Keep intermediate FASTA/SAM files
 #   --resume             Skip step 2 if remapped CSV and SAM files already exist
 #   -h / --help          Show this help message
@@ -64,8 +67,11 @@ THREADS=4
 MAPQ_TOPSEQ=30
 MAPQ_PROBE=0
 COORD_DELTA=-1
-EXCLUDE_INDELS=""
-REQUIRE_STRAND_AGREEMENT=""
+COORDINATE_ROLE="Moderate"
+TIE_LABEL="resolved"
+REFALT_CONF="Moderate"
+KEEP_INDELS=""
+KEEP_POLYMORPHIC=""
 KEEP_TEMP=""
 RESUME=""
 
@@ -85,8 +91,11 @@ while [[ $# -gt 0 ]]; do
         --mapq-topseq)      MAPQ_TOPSEQ="$2"; shift 2 ;;
         --mapq-probe)       MAPQ_PROBE="$2";  shift 2 ;;
         --coord-delta)      COORD_DELTA="$2"; shift 2 ;;
-        --exclude-indels)   EXCLUDE_INDELS="--exclude-indels"; shift ;;
-        --require-strand-agreement) REQUIRE_STRAND_AGREEMENT="--require-strand-agreement"; shift ;;
+        --coordinate-role)  COORDINATE_ROLE="$2"; shift 2 ;;
+        --tie-label)        TIE_LABEL="$2"; shift 2 ;;
+        --refalt-conf)      REFALT_CONF="$2"; shift 2 ;;
+        --keep-indels)      KEEP_INDELS="--keep-indels"; shift ;;
+        --keep-polymorphic) KEEP_POLYMORPHIC="--keep-polymorphic"; shift ;;
         --keep-temp)        KEEP_TEMP="--keep-temp"; shift ;;
         --resume)           RESUME=1; shift ;;
         -h|--help)          usage ;;
@@ -119,8 +128,6 @@ QC_DIR="$OUTPUT_DIR/qc"
 mkdir -p "$TEMP_DIR" "$REMAPPING_DIR" "$QC_DIR"
 
 REMAPPED_CSV="$REMAPPING_DIR/${PREFIX}_remapped_${ASSEMBLY}.csv"
-TOPSEQ_SAM="$TEMP_DIR/temp_topseq.sam"
-PROBE_SAM="$TEMP_DIR/temp_probe.sam"
 
 echo "========================================================"
 echo " Manifest Remapping Pipeline"
@@ -179,15 +186,16 @@ python "$SCRIPT_DIR/scripts/qc_filter.py" \
     -v  "$VCF_CONTIGS" \
     -a  "$ASSEMBLY" \
     -o  "$QC_DIR" \
-    --mapq-topseq   "$MAPQ_TOPSEQ" \
-    --mapq-probe    "$MAPQ_PROBE" \
-    --coord-delta   "$COORD_DELTA" \
-    --temp-dir      "$TEMP_DIR" \
-    --prefix        "$PREFIX" \
-    --topseq-sam    "$TOPSEQ_SAM" \
-    --probe-sam     "$PROBE_SAM" \
-    $EXCLUDE_INDELS \
-    $REQUIRE_STRAND_AGREEMENT
+    --coordinate-role "$COORDINATE_ROLE" \
+    --tie-label      "$TIE_LABEL" \
+    --refalt-conf    "$REFALT_CONF" \
+    --mapq-topseq    "$MAPQ_TOPSEQ" \
+    --mapq-probe     "$MAPQ_PROBE" \
+    --coord-delta    "$COORD_DELTA" \
+    --temp-dir       "$TEMP_DIR" \
+    --prefix         "$PREFIX" \
+    $KEEP_INDELS \
+    $KEEP_POLYMORPHIC
 
 # ── Cleanup temp files ────────────────────────────────────────────────────────
 if [[ -z "$KEEP_TEMP" ]]; then
