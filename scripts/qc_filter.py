@@ -542,141 +542,148 @@ def run_qc(args):
     write_mapq_histo(df["MAPQ_Probe"].dropna(), 2,
                      os.path.join(assessment_dir, "MAPQ_Probe.histo"))
 
-    # ── Filter 1: Strand=N/A (unmapped + ambiguous) ─────────────────────────
+    # ── Stage 1: Failed markers (Strand=N/A — unmapped + ambiguous) ─────────
     df_mapped = df[df[col_strand].isin(["+", "-"])].copy()
-    qc_stats["After Strand=N/A filter (unmapped + ambiguous)"] = len(df_mapped)
-    print(f"[qc] After Strand=N/A filter (unmapped + ambiguous): {len(df_mapped):,} ({len(df) - len(df_mapped):,} removed)")
+    qc_stats["Failed markers (unmapped + ambiguous)"] = len(df_mapped)
+    print(f"[qc] Stage 1 — Failed markers removed: {len(df) - len(df_mapped):,}; remaining: {len(df_mapped):,}")
 
-    # ── Filter 2: MAPQ filter ────────────────────────────────────────────────
-    # NaN MAPQ_TopGenomicSeq means probe_only (no TopSeq alignment) — exempt from this filter.
-    ts_mapq = df_mapped["MAPQ_TopGenomicSeq"]
-    if args.mapq_topseq > 0:
-        ts_fail = ts_mapq.notna() & (ts_mapq < args.mapq_topseq)
-        df_topseq_filtered = df_mapped[~ts_fail]
-    else:
-        df_topseq_filtered = df_mapped
-    df_mapq = apply_probe_mapq_filter(df_topseq_filtered, args.mapq_probe).copy()
-    qc_stats["After MAPQ filter"] = len(df_mapq)
-    print(f"[qc] After MAPQ filter (TopSeq>={args.mapq_topseq}): {len(df_mapq):,} ({len(df_mapped) - len(df_mapq):,} removed)")
-
-    # ── Filter 2.5: CoordDelta filter ────────────────────────────────────────
-    col_coord_delta  = f"CoordDelta_{assembly}"
-    col_anchor       = f"anchor_{assembly}"
-    if args.coord_delta >= 0:
-        if col_coord_delta not in df_mapq.columns or col_anchor not in df_mapq.columns:
-            print(f"[qc] WARNING: --coord-delta requested but {col_coord_delta!r} or "
-                  f"{col_anchor!r} column not found in input. Skipping filter. "
-                  "Re-run remap_manifest.py to generate these columns.")
-            df_coord = df_mapq
-        else:
-            # Remove markers where CoordDelta > threshold.
-            # CoordDelta = -1 means CIGAR coord was unavailable (SNP in soft-clipped region);
-            # these are probe-derived coordinates with no cross-validation — they pass through
-            # (−1 is not > any threshold ≥ 0).
-            # topseq_only markers also carry CoordDelta = -1 but have no probe at all;
-            # they are explicitly removed whenever the filter is active.
-            exceeds_delta  = df_mapq[col_coord_delta] > args.coord_delta
-            is_topseq_only = df_mapq[col_anchor] == "topseq_only"
-            df_coord = df_mapq[~exceeds_delta & ~is_topseq_only].copy()
-            n_removed = len(df_mapq) - len(df_coord)
-            n_delta   = exceeds_delta.sum()
-            n_ts_only = (is_topseq_only & ~exceeds_delta).sum()
-            print(f"[qc] After CoordDelta filter (delta<={args.coord_delta}): "
-                  f"{len(df_coord):,} ({n_removed:,} removed: "
-                  f"{n_delta:,} CoordDelta>{args.coord_delta}, {n_ts_only:,} topseq_only)")
-    else:
-        df_coord = df_mapq
-    if args.coord_delta >= 0:
-        qc_stats[f"After CoordDelta filter (delta<={args.coord_delta})"] = len(df_coord)
-
-    # ── Filter 2.6: Strand agreement filter ─────────────────────────────────
-    col_strand_agree = f"StrandAgreementAsExpected_{assembly}"
-    if args.require_strand_agreement:
-        if col_strand_agree not in df_coord.columns:
-            print(f"[qc] WARNING: --require-strand-agreement requested but {col_strand_agree!r} "
-                  "column not found in input. Skipping filter. "
-                  "Re-run remap_manifest.py to generate this column.")
-        else:
-            df_before = df_coord
-            df_coord = apply_strand_agreement_filter(df_coord, assembly).copy()
-            n_removed = len(df_before) - len(df_coord)
-            print(f"[qc] After strand agreement filter: {len(df_coord):,} ({n_removed:,} removed)")
-            qc_stats["After strand agreement filter"] = len(df_coord)
-
-    # ── Generate VCF of all remapped positions ───────────────────────────────
+    # ── VCF generation + strand normalisation (needed by Stage 2) ───────────
     print("[qc] Generating VCF position template...")
     pos_vcf  = os.path.join(temp_dir, "_pos.vcf")
     ref_vcf  = os.path.join(temp_dir, "_ref.vcf")
-    build_pos_vcf(df_coord, args.vcf_contigs, col_chr, col_pos, pos_vcf)
+    build_pos_vcf(df_mapped, args.vcf_contigs, col_chr, col_pos, pos_vcf)
 
     print("[qc] Extracting reference alleles with bcftools...")
     ref_alleles = extract_ref_alleles(pos_vcf, args.reference, ref_vcf)
 
-    # ── Strand-normalise remapped alleles (to + strand) ─────────────────────
-    df_coord = df_coord.copy()
-    df_coord["_gref"] = df_coord.apply(
+    df_mapped["_gref"] = df_mapped.apply(
         lambda r: strand_normalize(str(r[col_ref]) if pd.notna(r[col_ref]) else "", r[col_strand]), axis=1)
-    df_coord["_galt"] = df_coord.apply(
+    df_mapped["_galt"] = df_mapped.apply(
         lambda r: strand_normalize(str(r[col_alt]) if pd.notna(r[col_alt]) else "", r[col_strand]), axis=1)
-    df_coord["_genome_ref"] = df_coord["Name"].map(ref_alleles)
+    df_mapped["_genome_ref"] = df_mapped["Name"].map(ref_alleles)
 
     # ── Auto-correct swapped Ref/Alt assignments ────────────────────────────
     swap_mask = (
-        (df_coord["_gref"] != df_coord["_genome_ref"]) &
-        (df_coord["_galt"] == df_coord["_genome_ref"])
+        (df_mapped["_gref"] != df_mapped["_genome_ref"]) &
+        (df_mapped["_galt"] == df_mapped["_genome_ref"])
     )
     if swap_mask.any():
         n_swapped = swap_mask.sum()
         print(f"[qc] Auto-correcting {n_swapped:,} swapped Ref/Alt assignments (Alt matched genome Ref).")
-        df_coord.loc[swap_mask, ["_gref", "_galt"]] = (
-            df_coord.loc[swap_mask, ["_galt", "_gref"]].values
+        df_mapped.loc[swap_mask, ["_gref", "_galt"]] = (
+            df_mapped.loc[swap_mask, ["_galt", "_gref"]].values
         )
-        df_coord.loc[swap_mask, [col_ref, col_alt]] = (
-            df_coord.loc[swap_mask, [col_alt, col_ref]].values
+        df_mapped.loc[swap_mask, [col_ref, col_alt]] = (
+            df_mapped.loc[swap_mask, [col_alt, col_ref]].values
         )
 
-    # ── Filter 3: Design conflict (remapped Ref must match genome Ref) ───────
+    # ── Stage 2: Design conflict (remapped Ref must match genome Ref) ────────
     # For SNPs: _gref (single base, + strand) must equal _genome_ref from bcftools.
-    # For indels with deletion ref (_gref != ''): use pysam to fetch the full
-    #   deletion sequence from the reference and compare to _gref.
+    # For indels with deletion ref (_gref != ''): use RefAltMethodAgreement column
+    #   (NM_mismatch = conflict). Falls back to pysam check if column absent.
     # For insertions (_gref == ''): no reference sequence to verify; pass through.
     ref_fasta = pysam.FastaFile(args.reference)
     try:
-        snp_mask   = (df_coord["_gref"] != "") & (df_coord["_galt"] != "")
-        indel_mask = (df_coord["_gref"] == "") | (df_coord["_galt"] == "")
+        snp_mask   = (df_mapped["_gref"] != "") & (df_mapped["_galt"] != "")
+        indel_mask = (df_mapped["_gref"] == "") | (df_mapped["_galt"] == "")
 
-        # SNP design-conflict check (original logic)
-        snp_pass = snp_mask & (df_coord["_gref"] == df_coord["_genome_ref"])
+        snp_pass = snp_mask & (df_mapped["_gref"] == df_mapped["_genome_ref"])
 
-        # Indel design-conflict check: use RefAltMethodAgreement computed during remapping.
-        # 'NM_mismatch' means the NM-determined Ref allele did not match the genome sequence.
-        # If the column is absent (old CSV), fall back to the original pysam check.
         col_refalt_agree = f"RefAltMethodAgreement_{assembly}"
-        if col_refalt_agree in df_coord.columns:
-            indel_pass = indel_mask & (df_coord[col_refalt_agree] != "NM_mismatch")
+        if col_refalt_agree in df_mapped.columns:
+            indel_pass = indel_mask & (df_mapped[col_refalt_agree] != "NM_mismatch")
         else:
             def _indel_passes(row):
                 return check_deletion_ref_match(
                     ref_fasta, row[col_chr], int(row[col_pos]), row["_gref"]
                 )
-            indel_pass = indel_mask & df_coord.apply(_indel_passes, axis=1)
+            indel_pass = indel_mask & df_mapped.apply(_indel_passes, axis=1)
 
-        matching = df_coord[snp_pass | indel_pass].copy()
+        df_noconflict = df_mapped[snp_pass | indel_pass].copy()
     finally:
         ref_fasta.close()
 
-    qc_stats["After design conflict filter"] = len(matching)
-    print(f"[qc] After design conflict filter: {len(matching):,} ({len(df_coord) - len(matching):,} removed)")
+    qc_stats["After design conflict filter"] = len(df_noconflict)
+    print(f"[qc] Stage 2 — Design conflict removed: {len(df_mapped) - len(df_noconflict):,}; remaining: {len(df_noconflict):,}")
 
-    # ── Filter 3.5 (optional): Exclude indel markers ─────────────────────────
-    if args.exclude_indels:
-        before_excl = len(matching)
-        matching = apply_exclude_indels_filter(matching).copy()
-        n_excl = before_excl - len(matching)
-        print(f"[qc] After exclude-indels filter: {len(matching):,} ({n_excl:,} indels removed)")
-        qc_stats["After exclude-indels filter"] = len(matching)
+    # ── Stage 3: Coordinate role ─────────────────────────────────────────────
+    col_anchor = f"anchor_{assembly}"
+    if col_anchor in df_noconflict.columns:
+        df_coord_role = apply_coordinate_role_filter(df_noconflict, assembly, args.coordinate_role).copy()
+        n_removed = len(df_noconflict) - len(df_coord_role)
+        print(f"[qc] Stage 3 — Coordinate role ({args.coordinate_role}): {n_removed:,} removed; {len(df_coord_role):,} remaining")
+    else:
+        print(f"[qc] WARNING: {col_anchor!r} column not found. Skipping coordinate role filter.")
+        df_coord_role = df_noconflict
+    qc_stats[f"After coordinate role ({args.coordinate_role})"] = len(df_coord_role)
 
-    # Write _matchingSNPs.vcf
+    # ── Stage 4: Tie label ────────────────────────────────────────────────────
+    col_tie = f"tie_{assembly}"
+    if col_tie in df_coord_role.columns:
+        df_tie = apply_tie_label_filter(df_coord_role, assembly, args.tie_label).copy()
+        n_removed = len(df_coord_role) - len(df_tie)
+        print(f"[qc] Stage 4 — Tie label ({args.tie_label}): {n_removed:,} removed; {len(df_tie):,} remaining")
+    else:
+        print(f"[qc] WARNING: {col_tie!r} column not found. Skipping tie label filter.")
+        df_tie = df_coord_role
+    qc_stats[f"After tie label ({args.tie_label})"] = len(df_tie)
+
+    # ── Stage 5: RefAlt confidence ────────────────────────────────────────────
+    if col_refalt_agree in df_tie.columns:
+        df_refalt = apply_refalt_conf_filter(df_tie, assembly, args.refalt_conf).copy()
+        n_removed = len(df_tie) - len(df_refalt)
+        print(f"[qc] Stage 5 — RefAlt confidence ({args.refalt_conf}): {n_removed:,} removed; {len(df_refalt):,} remaining")
+    else:
+        print(f"[qc] WARNING: {col_refalt_agree!r} column not found. Skipping RefAlt confidence filter.")
+        df_refalt = df_tie
+    qc_stats[f"After RefAlt confidence ({args.refalt_conf})"] = len(df_refalt)
+
+    # ── Stage 6: MAPQ_TopGenomicSeq (probe_only exempt via NaN) ──────────────
+    ts_mapq = df_refalt["MAPQ_TopGenomicSeq"]
+    if args.mapq_topseq > 0:
+        ts_fail = ts_mapq.notna() & (ts_mapq < args.mapq_topseq)
+        df_mapq_ts = df_refalt[~ts_fail].copy()
+    else:
+        df_mapq_ts = df_refalt
+    n_removed = len(df_refalt) - len(df_mapq_ts)
+    print(f"[qc] Stage 6 — MAPQ_TopGenomicSeq (>={args.mapq_topseq}): {n_removed:,} removed; {len(df_mapq_ts):,} remaining")
+    qc_stats[f"After MAPQ_TopGenomicSeq (>={args.mapq_topseq})"] = len(df_mapq_ts)
+
+    # ── Stage 7: MAPQ_Probe (topseq_only exempt via NaN) ─────────────────────
+    df_mapq = apply_probe_mapq_filter(df_mapq_ts, args.mapq_probe).copy()
+    n_removed = len(df_mapq_ts) - len(df_mapq)
+    print(f"[qc] Stage 7 — MAPQ_Probe (>={args.mapq_probe}): {n_removed:,} removed; {len(df_mapq):,} remaining")
+    qc_stats[f"After MAPQ_Probe (>={args.mapq_probe})"] = len(df_mapq)
+
+    # ── Stage 8: CoordDelta ───────────────────────────────────────────────────
+    # topseq_only and probe_only have CoordDelta=-1 (no CIGAR coord) and pass through.
+    # Only markers with real CoordDelta > threshold are excluded.
+    col_coord_delta = f"CoordDelta_{assembly}"
+    if args.coord_delta >= 0:
+        if col_coord_delta in df_mapq.columns:
+            exceeds = df_mapq[col_coord_delta] > args.coord_delta
+            df_coord = df_mapq[~exceeds].copy()
+            n_removed = len(df_mapq) - len(df_coord)
+            print(f"[qc] Stage 8 — CoordDelta (delta<={args.coord_delta}): "
+                  f"{n_removed:,} removed (CoordDelta>{args.coord_delta} only); {len(df_coord):,} remaining")
+        else:
+            print(f"[qc] WARNING: {col_coord_delta!r} column not found. Skipping CoordDelta filter.")
+            df_coord = df_mapq
+        qc_stats[f"After CoordDelta filter (delta<={args.coord_delta})"] = len(df_coord)
+    else:
+        df_coord = df_mapq
+
+    # ── Stage 9: Indels (excluded by default; --keep-indels to include) ───────
+    if not args.keep_indels:
+        df_noindel = apply_exclude_indels_filter(df_coord).copy()
+        n_removed = len(df_coord) - len(df_noindel)
+        print(f"[qc] Stage 9 — Indels excluded: {n_removed:,} removed; {len(df_noindel):,} remaining")
+        qc_stats["After indel filter"] = len(df_noindel)
+    else:
+        df_noindel = df_coord
+        print("[qc] Stage 9 — Indels kept (--keep-indels).")
+
+    # Write _matchingSNPs.vcf (post-indel-filter, pre-polymorphic)
     match_vcf = os.path.join(out_dir, "_matchingSNPs.vcf")
     ref_fasta2 = pysam.FastaFile(args.reference)
     try:
@@ -685,12 +692,11 @@ def run_qc(args):
                 f.write("##fileformat=VCFv4.3\n")
                 f.write(vc.read())
             f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
-            for _, row in matching.iterrows():
+            for _, row in df_noindel.iterrows():
                 gref = row["_gref"]
                 galt = row["_galt"]
                 pos  = int(row[col_pos])
                 if gref == "" or galt == "":
-                    # Indel: use anchor-base VCF encoding
                     vcf_pos, vcf_ref, vcf_alt = make_anchor_alleles(
                         ref_fasta2, row[col_chr], pos, gref, galt
                     )
@@ -700,79 +706,51 @@ def run_qc(args):
     finally:
         ref_fasta2.close()
 
-    # ── Filter 4: Polymorphic positions ─────────────────────────────────────
-    # A position is polymorphic if multiple markers at the same Chr:Pos have different Ref/Alt
-    pos_allele_counts = (
-        matching.assign(_allele_pair=matching["_gref"] + "," + matching["_galt"])
-        .groupby([col_chr, col_pos])["_allele_pair"]
-        .nunique()
-    )
-    polymorphic = pos_allele_counts[pos_allele_counts > 1].reset_index()
-    poly_set = set(zip(polymorphic[col_chr], polymorphic[col_pos]))
+    # ── Stage 10: Polymorphic (removed by default; --keep-polymorphic to skip) ─
+    if not args.keep_polymorphic:
+        pos_allele_counts = (
+            df_noindel.assign(_allele_pair=df_noindel["_gref"] + "," + df_noindel["_galt"])
+            .groupby([col_chr, col_pos])["_allele_pair"]
+            .nunique()
+        )
+        polymorphic = pos_allele_counts[pos_allele_counts > 1].reset_index()
+        poly_set = set(zip(polymorphic[col_chr], polymorphic[col_pos]))
 
-    poly_path = os.path.join(out_dir, "polymorphic_positions.txt")
-    with open(poly_path, "w") as f:
-        for chr_, pos in poly_set:
-            f.write(f"{chr_},{pos}\n")
+        poly_path = os.path.join(out_dir, "polymorphic_positions.txt")
+        with open(poly_path, "w") as f:
+            for chr_, pos in poly_set:
+                f.write(f"{chr_},{pos}\n")
 
-    df_binary = matching[~matching.apply(
-        lambda r: (r[col_chr], r[col_pos]) in poly_set, axis=1
-    )].copy()
-    qc_stats["After polymorphic filter"] = len(df_binary)
-    print(f"[qc] After polymorphic filter: {len(df_binary):,} ({len(matching) - len(df_binary):,} removed)")
-
-    binary_vcf = os.path.join(out_dir, "_matchingSNPs_binary.vcf")
-    with open(binary_vcf, "w") as f:
-        with open(match_vcf) as src:
-            for line in src:
-                if line.startswith("#"):
-                    f.write(line)
-                    continue
-                name = line.split("\t")[2]
-                if name in df_binary["Name"].values:
-                    f.write(line)
-
-    # ── Filter 5: Consistency check ─────────────────────────────────────────
-    topseq_sam = args.topseq_sam or os.path.join(temp_dir, "temp_topseq.sam")
-    probe_sam  = args.probe_sam  or os.path.join(temp_dir, "temp_probe.sam")
-
-    if os.path.exists(topseq_sam) and os.path.exists(probe_sam):
-        print("[qc] Running consistency check against SAM files...")
-        inconsistent = get_consistent_snps(topseq_sam, probe_sam)
-
-        # MAPQ histograms for inconsistent markers
-        df_incons = df[df["Name"].isin(inconsistent)]
-        write_mapq_histo(df_incons["MAPQ_TopGenomicSeq"].dropna(), 2,
-                         os.path.join(assessment_dir, "MAPQ_TopGenomicSeq_inconsistent_remapped.histo"))
-        write_mapq_histo(df_incons["MAPQ_Probe"].dropna(), 2,
-                         os.path.join(assessment_dir, "MAPQ_Probe_inconsistent_remapped.histo"))
-        df_incons.to_csv(os.path.join(out_dir, "inconsistent_remapped.csv"), index=False)
-
-        df_consistent = df_binary[~df_binary["Name"].isin(inconsistent)].copy()
+        df_final = df_noindel[~df_noindel.apply(
+            lambda r: (r[col_chr], r[col_pos]) in poly_set, axis=1
+        )].copy()
+        n_removed = len(df_noindel) - len(df_final)
+        print(f"[qc] Stage 10 — Polymorphic removed: {n_removed:,}; {len(df_final):,} remaining")
+        qc_stats["After polymorphic filter"] = len(df_final)
     else:
-        print(f"[qc] WARNING: SAM files not found ({topseq_sam}, {probe_sam}). "
-              "Skipping consistency filter. Pass --topseq-sam and --probe-sam to enable.")
-        inconsistent = set()
-        df_consistent = df_binary.copy()
+        df_final = df_noindel
+        print("[qc] Stage 10 — Polymorphic sites kept (--keep-polymorphic).")
 
-    qc_stats["After consistency filter"] = len(df_consistent)
-    print(f"[qc] After consistency filter: {len(df_consistent):,} ({len(df_binary) - len(df_consistent):,} removed)")
-
-    # Write _matchingSNPs_binary_consistantMapping.vcf
-    consist_vcf = os.path.join(out_dir, "_matchingSNPs_binary_consistantMapping.vcf")
-    consist_names = set(df_consistent["Name"])
-    with open(binary_vcf) as src, open(consist_vcf, "w") as f:
+    # Write _matchingSNPs_binary.vcf
+    binary_vcf = os.path.join(out_dir, "_matchingSNPs_binary.vcf")
+    final_names = set(df_final["Name"])
+    with open(match_vcf) as src, open(binary_vcf, "w") as f:
         for line in src:
             if line.startswith("#"):
                 f.write(line)
                 continue
-            if line.split("\t")[2] in consist_names:
+            if line.split("\t")[2] in final_names:
                 f.write(line)
+
+    # Write _matchingSNPs_binary_consistantMapping.vcf (identical to binary — consistency filter removed)
+    consist_vcf = os.path.join(out_dir, "_matchingSNPs_binary_consistantMapping.vcf")
+    with open(binary_vcf) as src, open(consist_vcf, "w") as f:
+        f.write(src.read())
 
     # ── PLINK BIM file ───────────────────────────────────────────────────────
     # For indel markers, apply anchor-base encoding so PLINK sees VCF-style alleles.
     bim_path = os.path.join(out_dir, f"{prefix}_remapped_{assembly}.bim")
-    bim = df_consistent[[col_chr, "Name", col_pos, "_gref", "_galt"]].copy()
+    bim = df_final[[col_chr, "Name", col_pos, "_gref", "_galt"]].copy()
     ref_fasta3 = pysam.FastaFile(args.reference)
     try:
         def _bim_row_alleles(row):
@@ -805,13 +783,13 @@ def run_qc(args):
     # ── Final map file ───────────────────────────────────────────────────────
     map_path = os.path.join(out_dir, f"matchingSNPs_binary_consistantMapping.{assembly}_map")
     print("[qc] Building final map file...")
-    errors = build_final_map(df_consistent, assembly, map_path)
+    errors = build_final_map(df_final, assembly, map_path)
     if errors:
         print(f"[qc] WARNING: {errors} markers could not be assigned to map file (written as 'Error' lines).")
     else:
         print(f"[qc] Final map file written with 0 errors: {map_path}")
 
-    qc_stats["Final markers"] = len(df_consistent)
+    qc_stats["Final markers"] = len(df_final)
 
     # ── QC Report ────────────────────────────────────────────────────────────
     report_path = os.path.join(out_dir, "QC_Report.txt")
@@ -829,6 +807,23 @@ def run_qc(args):
             f.write(f"{stage:<40} {count:>8,}{removed_str}\n")
             if isinstance(count, int):
                 prev = count
+
+    # ── 3D summary appended to QC_Report.txt ─────────────────────────────────
+    _req = [f"anchor_{assembly}", f"tie_{assembly}", f"RefAltMethodAgreement_{assembly}"]
+    if all(c in df_final.columns for c in _req):
+        col_a_f = f"anchor_{assembly}"
+        col_t_f = f"tie_{assembly}"
+        col_r_f = f"RefAltMethodAgreement_{assembly}"
+        three_d = {}
+        for (a, t, r), cnt in df_final.groupby([col_a_f, col_t_f, col_r_f]).size().items():
+            bucket = "NM_*" if r.startswith("NM_") else ("ambiguous" if r == "ambiguous" else "N/A")
+            key = (a, t)
+            if key not in three_d:
+                three_d[key] = {"NM_*": 0, "ambiguous": 0, "N/A": 0}
+            three_d[key][bucket] += cnt
+        with open(report_path, "a") as f:
+            f.write("\n" + format_three_d_table(three_d) + "\n")
+
     print(f"[qc] QC report written: {report_path}")
 
     # Print summary
