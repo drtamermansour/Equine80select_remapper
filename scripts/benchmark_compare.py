@@ -231,7 +231,7 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
                 return "unmapped"
             return "mapped"
         df["remapped_status"] = df.apply(_derive_status, axis=1)
-        df = df.drop(columns=[col_anchor, col_tie])
+        df = df.rename(columns={col_anchor: "anchor", col_tie: "tie"})
     else:
         df = df.rename(columns={col_status: "remapped_status"})
 
@@ -265,6 +265,10 @@ def compare_all(manifest_df: pd.DataFrame, remapped_df: pd.DataFrame) -> pd.Data
     merged["remapped_pos"]    = merged["remapped_pos"].fillna(0)
     merged["remapped_strand"] = merged["remapped_strand"].fillna("N/A")
     merged["remapped_status"] = merged["remapped_status"].fillna("unmapped")
+    if "anchor" in merged.columns:
+        merged["anchor"] = merged["anchor"].fillna("N/A")
+    if "tie" in merged.columns:
+        merged["tie"] = merged["tie"].fillna("N/A")
 
     results = []
     offsets = []
@@ -386,6 +390,84 @@ def stratify_by_coord_delta(result_df: pd.DataFrame) -> list[dict] | None:
     return rows
 
 
+def build_three_d_accuracy(result_df: pd.DataFrame) -> dict | None:
+    """
+    Group result_df by (anchor, tie) and count each benchmark result category.
+
+    Returns a dict mapping (anchor_str, tie_str) → {category: count, ...},
+    or None if anchor/tie columns are absent (old remapped CSVs).
+    """
+    if "anchor" not in result_df.columns or "tie" not in result_df.columns:
+        return None
+    three_d = {}
+    for (anchor, tie), group in result_df.fillna("N/A").groupby(["anchor", "tie"]):
+        three_d[(str(anchor), str(tie))] = {
+            cat: int((group["result"] == cat).sum()) for cat in CATEGORIES
+        }
+    return three_d
+
+
+def format_three_d_accuracy_table(three_d: dict) -> str:
+    """
+    Format the 3-dimension accuracy breakdown as a string matching the style of
+    qc_filter.format_three_d_table.
+
+    Columns: correct | coord_off | wrong_chr | other | Total | Acc%
+      other = unmapped + ambiguous + coord_correct_strand_wrong
+      Acc%  = (correct + coord_correct_strand_wrong) / Total  (coord-accurate)
+    """
+    ANCHOR_ORDER = ["topseq_n_probe", "topseq_only", "probe_only", "N/A"]
+    TIE_ORDER    = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
+                    "CoordDelta_resolved", "scaffold_resolved", "ambiguous", "N/A"]
+    W = 88
+
+    lines = [
+        "═" * W,
+        "3-Dimension Accuracy Breakdown  (anchor × tie × benchmark outcome)",
+        f"  {'anchor / tie':<28} {'correct':>10} {'coord_off':>10}"
+        f" {'wrong_chr':>10} {'other':>7} {'Total':>8} {'Acc%':>7}",
+        "  " + "─" * 84,
+    ]
+
+    grand = {cat: 0 for cat in CATEGORIES}
+
+    for anchor in ANCHOR_ORDER:
+        anchor_data = {t: d for (a, t), d in three_d.items() if a == anchor}
+        if not anchor_data or sum(v for d in anchor_data.values() for v in d.values()) == 0:
+            continue
+        lines.append(f"  anchor={anchor}")
+        for tie in TIE_ORDER:
+            d = anchor_data.get(tie)
+            if d is None:
+                continue
+            total = sum(d.values())
+            if total == 0:
+                continue
+            correct    = d["correct"]
+            strand_bad = d["coord_correct_strand_wrong"]
+            coord_off  = d["coord_off"]
+            wrong_chr  = d["wrong_chr"]
+            other      = d["unmapped"] + d["ambiguous"] + strand_bad
+            acc        = 100.0 * (correct + strand_bad) / total
+            lines.append(
+                f"    tie={tie:<24} {correct:>10,} {coord_off:>10,}"
+                f" {wrong_chr:>10,} {other:>7,} {total:>8,} {acc:>6.1f}%"
+            )
+            for cat in CATEGORIES:
+                grand[cat] += d[cat]
+
+    grand_total  = sum(grand.values())
+    grand_strand = grand["coord_correct_strand_wrong"]
+    grand_acc    = 100.0 * (grand["correct"] + grand_strand) / grand_total if grand_total else 0.0
+    grand_other  = grand["unmapped"] + grand["ambiguous"] + grand_strand
+    lines += [
+        "  " + "─" * 84,
+        f"  {'Total':<28} {grand['correct']:>10,} {grand['coord_off']:>10,}"
+        f" {grand['wrong_chr']:>10,} {grand_other:>7,} {grand_total:>8,} {grand_acc:>6.1f}%",
+    ]
+    return "\n".join(lines)
+
+
 def write_report(
     result_df: pd.DataFrame,
     chry_df: pd.DataFrame,
@@ -462,6 +544,16 @@ def write_report(
             ca_str = _fmt(r["coord_accurate"], r["n"])
             co_str = _fmt(r["correct"],        r["n"])
             w(f"  {r['label']:<14}  {r['n']:>8,}  {ca_str}  {co_str}")
+        w()
+
+    # 3D accuracy breakdown (only when anchor/tie columns are present)
+    three_d = build_three_d_accuracy(result_df)
+    if three_d is not None:
+        w("3-DIMENSION ACCURACY BREAKDOWN")
+        w("  Acc% = (correct + coord_correct_strand_wrong) / Total  [coord-accurate]")
+        w("  other = unmapped + ambiguous + coord_correct_strand_wrong")
+        w()
+        w(format_three_d_accuracy_table(three_d))
         w()
 
     # Diff section
