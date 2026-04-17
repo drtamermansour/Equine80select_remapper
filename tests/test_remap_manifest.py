@@ -20,6 +20,7 @@ from remap_manifest import (
     DecisionCounters,
     reverse_complement,
     probe_topseq_orientation,
+    _kmer_orientation,
     compute_probe_strand_agreement,
     extract_candidates,
     compute_alignment_status,
@@ -415,6 +416,59 @@ def test_reverse_complement_lowercase():
     assert reverse_complement("acgt") == "acgt"
 
 
+# ── _kmer_orientation ─────────────────────────────────────────────────────────
+
+def test_kmer_orientation_forward_wins():
+    """Topseq_a contains a probe-length window embedded forward → 'same'."""
+    probe = "ACGTTGCATTAGCCTAGGCAGATCTTGACAGCTATCGAGCTAGATCGTAC"  # 50 bp
+    topseq_a = ("N" * 50) + probe[:25] + ("N" * 150)
+    assert _kmer_orientation(probe, topseq_a) == "same"
+
+
+def test_kmer_orientation_rc_wins():
+    """Topseq_a contains only a window of RC(probe) → 'complement'."""
+    probe = "ACGTTGCATTAGCCTAGGCAGATCTTGACAGCTATCGAGCTAGATCGTAC"
+    rc = reverse_complement(probe)
+    topseq_a = ("N" * 50) + rc[:25] + ("N" * 150)
+    assert _kmer_orientation(probe, topseq_a) == "complement"
+
+
+def test_kmer_orientation_tie_returns_same():
+    """Zero overlap in both directions → tie resolves to 'same'."""
+    probe = "A" * 50                # k-mers all A
+    topseq_a = "G" * 200            # no A-mers, no T-mers (RC of A is T) → both 0
+    assert _kmer_orientation(probe, topseq_a) == "same"
+
+
+def test_kmer_orientation_short_topseq_returns_same():
+    """Topseq_a shorter than k → degenerate input → 'same'."""
+    probe = "ACGT" * 13             # 52 bp
+    topseq_a = "ACGTACGTAC"         # 10 bp < k=21
+    assert _kmer_orientation(probe, topseq_a) == "same"
+
+
+def test_kmer_orientation_short_probe_returns_same():
+    """Probe shorter than k → degenerate input → 'same'."""
+    probe = "ACGT"                  # 4 bp < k=21
+    topseq_a = "ACGTACGT" * 30      # long enough
+    assert _kmer_orientation(probe, topseq_a) == "same"
+
+
+def test_kmer_orientation_empty_inputs_return_same():
+    """Falsy probe or topseq → 'same' (defensive guard)."""
+    assert _kmer_orientation("", "ACGT" * 30) == "same"
+    assert _kmer_orientation("ACGT" * 30, "") == "same"
+
+
+def test_kmer_orientation_forward_dominates_over_rc():
+    """More forward k-mer hits than rc → 'same' even when both have some."""
+    probe = "ACGTTGCATTAGCCTAGGCAGATCTTGACAGCTATCGAGCTAGATCGTAC"
+    rc = reverse_complement(probe)
+    # Put the full probe (30 fwd 21-mers match) and just one rc 21-mer
+    topseq_a = probe + ("N" * 50) + rc[:21]
+    assert _kmer_orientation(probe, topseq_a) == "same"
+
+
 # ── probe_topseq_orientation ──────────────────────────────────────────────────
 
 def test_probe_topseq_orientation_same_found_in_a():
@@ -439,12 +493,31 @@ def test_probe_topseq_orientation_complement():
     topseq_b = "XXXXXXXXXX"
     assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "complement"
 
-def test_probe_topseq_orientation_unknown():
-    """Neither probe nor its RC appears in either topseq → 'unknown'."""
-    probe    = "AAACCC"
+def test_probe_topseq_orientation_fallback_invokes_kmer_same():
+    """Substring miss, but k-mer overlap dominates forward → 'same' via fallback."""
+    probe = "ACGTTGCATTAGCCTAGGCAGATCTTGACAGCTATCGAGCTAGATCGTAC"  # 50 bp
+    # embed a 21-mer of probe (not the whole probe → substring-miss guaranteed)
+    topseq_a = ("N" * 20) + probe[:21] + ("N" * 40)
+    topseq_b = "G" * 100
+    assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "same"
+
+
+def test_probe_topseq_orientation_fallback_invokes_kmer_complement():
+    """Substring miss, but k-mer overlap dominates RC → 'complement' via fallback."""
+    probe = "ACGTTGCATTAGCCTAGGCAGATCTTGACAGCTATCGAGCTAGATCGTAC"
+    rc = reverse_complement(probe)
+    topseq_a = ("N" * 20) + rc[:21] + ("N" * 40)
+    topseq_b = "G" * 100
+    assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "complement"
+
+
+def test_probe_topseq_orientation_never_returns_unknown():
+    """With the k-mer fallback, orientation is always resolvable."""
+    probe = "AAACCC"
     topseq_a = "TTTTTTTTTT"
     topseq_b = "GGGGGGGGGG"
-    assert probe_topseq_orientation(probe, topseq_a, topseq_b) == "unknown"
+    result = probe_topseq_orientation(probe, topseq_a, topseq_b)
+    assert result in ("same", "complement")
 
 def test_probe_topseq_orientation_same_takes_priority_over_complement():
     """If probe matches as-is (same) AND its RC also matches, 'same' wins."""
@@ -455,111 +528,113 @@ def test_probe_topseq_orientation_same_takes_priority_over_complement():
 
 
 # ── compute_probe_strand_agreement ────────────────────────────────────────────
+# Expected probe strand is derived purely from sequence comparison
+# (probe_topseq_orientation + topseq_strand). IlmnStrand is never consulted.
+# Agreement is always "True" or "False" — never "N/A".
 
-def test_probe_strand_top_probe_agrees_with_topseq():
-    """TOP, probe on same strand as TopSeq → ProbeStrand=TopSeq strand, agreement=True."""
-    ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="TOP", topseq_strand="+",
-        probe_align_strand="+", probe_seq=None, topseq_a=None, topseq_b=None,
-    )
-    assert ps == "+"
-    assert ag == "True"
-
-def test_probe_strand_top_probe_disagrees_with_topseq():
-    """TOP, probe on opposite strand from TopSeq → agreement=False."""
-    ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="TOP", topseq_strand="+",
-        probe_align_strand="-", probe_seq=None, topseq_a=None, topseq_b=None,
-    )
-    assert ps == "-"
-    assert ag == "False"
-
-def test_probe_strand_bot_probe_opposite_topseq_is_expected():
-    """BOT, probe on opposite strand from TopSeq → agreement=True (expected for BOT)."""
-    ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="BOT", topseq_strand="+",
-        probe_align_strand="-", probe_seq=None, topseq_a=None, topseq_b=None,
-    )
-    assert ps == "-"
-    assert ag == "True"
-
-def test_probe_strand_bot_probe_same_as_topseq_is_unexpected():
-    """BOT, probe on same strand as TopSeq → agreement=False (unexpected for BOT)."""
-    ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="BOT", topseq_strand="+",
-        probe_align_strand="+", probe_seq=None, topseq_a=None, topseq_b=None,
-    )
-    assert ps == "+"
-    assert ag == "False"
-
-def test_probe_strand_top_minus_strand_topseq():
-    """TOP, TopSeq on - strand, probe also on - → agreement=True."""
-    ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="TOP", topseq_strand="-",
-        probe_align_strand="-", probe_seq=None, topseq_a=None, topseq_b=None,
-    )
-    assert ps == "-"
-    assert ag == "True"
-
-def test_probe_strand_plus_same_orientation_is_expected():
-    """PLUS, sequence comparison → same orientation, topseq=+ → ProbeStrand=+, agreement=True."""
+def test_strand_agreement_same_orientation_probe_on_topseq_strand_true():
+    """orientation=same, topseq=+, probe=+ → agreement True."""
     probe    = "AAACCC"
     topseq_a = "XYZ" + probe + "XYZ"
     topseq_b = "XXXXXXXXXX"
     ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="PLUS", topseq_strand="+",
-        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+        topseq_strand="+", probe_align_strand="+",
+        probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
     )
     assert ps == "+"
     assert ag == "True"
 
-def test_probe_strand_plus_complement_orientation_is_unexpected():
-    """PLUS, RC matches → complement orientation, topseq=+ → ProbeStrand=-, agreement=False."""
+
+def test_strand_agreement_same_orientation_probe_opposite_topseq_false():
+    """orientation=same, topseq=+, probe=- → agreement False."""
     probe    = "AAACCC"
-    topseq_a = "XYZ" + reverse_complement(probe) + "XYZ"
+    topseq_a = "XYZ" + probe + "XYZ"
     topseq_b = "XXXXXXXXXX"
     ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="PLUS", topseq_strand="+",
-        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+        topseq_strand="+", probe_align_strand="-",
+        probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
     )
     assert ps == "-"
     assert ag == "False"
 
-def test_probe_strand_minus_complement_orientation_is_expected():
-    """MINUS, RC matches → complement orientation, topseq=+ → ProbeStrand=-, agreement=True."""
+
+def test_strand_agreement_complement_orientation_probe_opposite_topseq_true():
+    """orientation=complement, topseq=+, probe=- → agreement True."""
     probe    = "AAACCC"
     topseq_a = "XYZ" + reverse_complement(probe) + "XYZ"
     topseq_b = "XXXXXXXXXX"
     ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="MINUS", topseq_strand="+",
-        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+        topseq_strand="+", probe_align_strand="-",
+        probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
     )
     assert ps == "-"
     assert ag == "True"
 
-def test_probe_strand_plus_unknown_orientation_gives_na():
-    """PLUS, no sequence match → ProbeStrand=N/A, agreement=N/A."""
+
+def test_strand_agreement_complement_orientation_probe_on_topseq_strand_false():
+    """orientation=complement, topseq=+, probe=+ → agreement False."""
     probe    = "AAACCC"
+    topseq_a = "XYZ" + reverse_complement(probe) + "XYZ"
+    topseq_b = "XXXXXXXXXX"
+    ps, ag = compute_probe_strand_agreement(
+        topseq_strand="+", probe_align_strand="+",
+        probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+    )
+    assert ps == "+"
+    assert ag == "False"
+
+
+def test_strand_agreement_same_orientation_topseq_minus_probe_minus_true():
+    """orientation=same, topseq=-, probe=- → expected probe strand = topseq strand = -."""
+    probe    = "AAACCC"
+    topseq_a = "XYZ" + probe + "XYZ"
+    topseq_b = "XXXXXXXXXX"
+    ps, ag = compute_probe_strand_agreement(
+        topseq_strand="-", probe_align_strand="-",
+        probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+    )
+    assert ps == "-"
+    assert ag == "True"
+
+
+def test_strand_agreement_same_orientation_topseq_minus_probe_plus_false():
+    """orientation=same, topseq=-, probe=+ → expected - but got + → False."""
+    probe    = "AAACCC"
+    topseq_a = "XYZ" + probe + "XYZ"
+    topseq_b = "XXXXXXXXXX"
+    ps, ag = compute_probe_strand_agreement(
+        topseq_strand="-", probe_align_strand="+",
+        probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+    )
+    assert ps == "+"
+    assert ag == "False"
+
+
+def test_strand_agreement_never_returns_na():
+    """With the k-mer fallback, agreement is always 'True' or 'False' — never 'N/A'."""
+    # Probe has no substring or k-mer overlap in either direction with topseq → tie → same → agreement computable.
+    probe    = "AAACCC"                     # short, substring match unlikely
     topseq_a = "TTTTTTTTTT"
     topseq_b = "GGGGGGGGGG"
     ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="PLUS", topseq_strand="+",
-        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+        topseq_strand="+", probe_align_strand="+",
+        probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
     )
-    assert ps == "N/A"
-    assert ag == "N/A"
+    assert ag in ("True", "False")
+    assert ps in ("+", "-")
 
-def test_probe_strand_plus_topseq_minus_same_orientation_unexpected():
-    """PLUS, same orientation but topseq=- → ProbeStrand=-, agreement=False (expected + for PLUS)."""
-    probe    = "AAACCC"
-    topseq_a = "XYZ" + probe + "XYZ"
-    topseq_b = "XXXXXXXXXX"
+
+def test_strand_agreement_uses_kmer_fallback_when_substring_misses():
+    """Substring miss but 21-mer hit for forward orientation → expected probe strand = topseq strand."""
+    probe = "ACGTTGCATTAGCCTAGGCAGATCTTGACAGCTATCGAGCTAGATCGTAC"  # 50 bp
+    topseq_a = ("N" * 20) + probe[:21] + ("N" * 40)   # no substring match, forward k-mer present
+    topseq_b = "G" * 100
     ps, ag = compute_probe_strand_agreement(
-        ilmn_strand="PLUS", topseq_strand="-",
-        probe_align_strand=None, probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
+        topseq_strand="+", probe_align_strand="+",
+        probe_seq=probe, topseq_a=topseq_a, topseq_b=topseq_b,
     )
-    assert ps == "-"
-    assert ag == "False"
+    assert ps == "+"
+    assert ag == "True"
 
 
 # ── CIGAR coordinate override for indels (Q5) ────────────────────────────────
@@ -567,7 +642,7 @@ def test_probe_strand_plus_topseq_minus_same_orientation_unexpected():
 # indel markers (where one allele is empty string), regardless of CoordDelta.
 # These tests verify the helper logic directly via parse_cigar_to_ref_pos since
 # the override is inline in run_remapping; we test the contract of the helper
-# and document the expected CoordSource="cigar" for indels.
+# and document the expected CoordSource="topseq_cigar" for indels.
 
 def test_cigar_coord_used_for_deletion_allele():
     """For a deletion indel (ref_char='ACGT', alt_char=''), CIGAR coord must be chosen.
@@ -575,7 +650,7 @@ def test_cigar_coord_used_for_deletion_allele():
     This is a documentation/contract test: when ref_char or alt_char is empty string,
     the pipeline must use cigar_coord as final_pos rather than probe coord (c_pos),
     regardless of whether abs(c_pos - cigar_coord) < 2.
-    The test encodes the invariant: is_indel → coord_source == "cigar".
+    The test encodes the invariant: is_indel → coord_source == "topseq_cigar".
     """
     ref_char = "ACGT"
     alt_char = ""
@@ -592,21 +667,21 @@ def test_cigar_coord_used_for_deletion_allele():
     coord_delta_val = abs(c_pos - cigar_coord)  # = 1
     if cigar_in_sc:
         final_pos    = c_pos
-        coord_source = "probe"
+        coord_source = "probe_cigar"
     else:
         if coord_delta_val >= 2:
             final_pos    = cigar_coord
-            coord_source = "cigar"
+            coord_source = "topseq_cigar"
         else:
             final_pos    = c_pos
-            coord_source = "probe"
-    assert coord_source == "probe"  # without indel override, probe wins
+            coord_source = "probe_cigar"
+    assert coord_source == "probe_cigar"  # without indel override, probe wins
 
     # With indel override: CIGAR coord is always chosen for indels
     if is_indel and not cigar_in_sc and cigar_coord != 0:
         final_pos    = cigar_coord
-        coord_source = "cigar"
-    assert coord_source == "cigar"
+        coord_source = "topseq_cigar"
+    assert coord_source == "topseq_cigar"
     assert final_pos == cigar_coord
 
 
@@ -623,11 +698,11 @@ def test_cigar_coord_used_for_insertion_allele():
 
     if is_indel and not cigar_in_sc and cigar_coord != 0:
         final_pos    = cigar_coord
-        coord_source = "cigar"
+        coord_source = "topseq_cigar"
     else:
         final_pos    = c_pos
-        coord_source = "probe"
-    assert coord_source == "cigar"
+        coord_source = "probe_cigar"
+    assert coord_source == "topseq_cigar"
 
 
 def test_cigar_coord_not_overridden_when_softclip():
@@ -643,16 +718,16 @@ def test_cigar_coord_not_overridden_when_softclip():
 
     if is_indel and not cigar_in_sc and cigar_coord != 0:
         final_pos    = cigar_coord
-        coord_source = "cigar"
+        coord_source = "topseq_cigar"
     else:
         # Fall back to regular logic
         if cigar_in_sc:
             final_pos    = c_pos
-            coord_source = "probe"
+            coord_source = "probe_cigar"
         else:
             final_pos    = c_pos
-            coord_source = "probe"
-    assert coord_source == "probe"
+            coord_source = "probe_cigar"
+    assert coord_source == "probe_cigar"
     assert final_pos == c_pos
 
 
@@ -703,12 +778,10 @@ def test_alignment_status_unmapped():
 # ── build_valid_triples ───────────────────────────────────────────────────────
 
 def test_build_valid_triples_strand_valid_probe_kept():
-    """TOP strand marker: probe on same strand as TopSeq → strand-valid → triple emitted."""
+    """Probe substring in topseq_a → orientation=same, probe & topseq both + → triple emitted."""
     ts_aligns = {"A": [_ts("chr1", 100, strand="+")], "B": []}
     pb_aligns = [_pb("chr1", 100, strand="+")]
-    # IlmnStrand=TOP, probe strand == TopSeq strand → agreement=True
     triples = build_valid_triples(ts_aligns, pb_aligns,
-                                   ilmn_strand="TOP",
                                    probe_seq="ACGT",
                                    topseq_a="ACGT", topseq_b="ACGG")
     assert len(triples) == 1
@@ -718,12 +791,10 @@ def test_build_valid_triples_strand_valid_probe_kept():
 
 
 def test_build_valid_triples_strand_invalid_probe_discarded():
-    """TOP strand marker: probe on opposite strand → StrandAgreementAsExpected=False → discarded."""
+    """orientation=same (probe in topseq_a) but probe strand opposite TopSeq → agreement False → discarded."""
     ts_aligns = {"A": [_ts("chr1", 100, strand="+")], "B": []}
     pb_aligns = [_pb("chr1", 100, strand="-")]
-    # IlmnStrand=TOP, probe strand != TopSeq strand → agreement=False
     triples = build_valid_triples(ts_aligns, pb_aligns,
-                                   ilmn_strand="TOP",
                                    probe_seq="ACGT",
                                    topseq_a="ACGT", topseq_b="ACGG")
     assert triples == []
@@ -737,7 +808,6 @@ def test_build_valid_triples_keeps_highest_overlap_probe():
     pb1 = _pb("chr1", 120, cigar="80M")   # 120-199 → overlap with 100-199 = 80
     pb2 = _pb("chr1", 180, cigar="20M")   # 180-199 → overlap = 20
     triples = build_valid_triples(ts_aligns, [pb1, pb2],
-                                   ilmn_strand="TOP",
                                    probe_seq="ACGT",
                                    topseq_a="ACGT", topseq_b="ACGG")
     assert len(triples) == 1
@@ -745,14 +815,15 @@ def test_build_valid_triples_keeps_highest_overlap_probe():
     assert winning_pb["Pos"] == 120  # pb1 had higher overlap
 
 
-def test_build_valid_triples_unknown_ilmn_strand_keeps_probe():
-    """IlmnStrand unknown → strand check returns N/A → probe treated as valid."""
+def test_build_valid_triples_complement_orientation_flips_expected_strand():
+    """RC(probe) in topseq_a → orientation=complement → probe expected opposite TopSeq; - strand is valid."""
     ts_aligns = {"A": [_ts("chr1", 100, strand="+")], "B": []}
     pb_aligns = [_pb("chr1", 100, strand="-")]
+    probe = "AAACCC"
     triples = build_valid_triples(ts_aligns, pb_aligns,
-                                   ilmn_strand="",
-                                   probe_seq="ACGT",
-                                   topseq_a="ACGT", topseq_b="ACGG")
+                                   probe_seq=probe,
+                                   topseq_a="XYZ" + reverse_complement(probe) + "XYZ",
+                                   topseq_b="XXXXXXXXXX")
     assert len(triples) == 1
 
 
@@ -762,7 +833,6 @@ def test_build_valid_triples_zero_overlap_discarded():
     pb = _pb("chr1", 200, cigar="50M")   # 200-249 → no overlap
     ts_aligns = {"A": [ts], "B": []}
     triples = build_valid_triples({"A": [ts], "B": []}, [pb],
-                                   ilmn_strand="TOP",
                                    probe_seq="ACGT",
                                    topseq_a="ACGT", topseq_b="ACGG")
     assert triples == []
@@ -773,7 +843,6 @@ def test_build_valid_triples_different_chr_discarded():
     ts_aligns = {"A": [_ts("chr1", 100)], "B": []}
     pb_aligns = [_pb("chr2", 100)]
     triples = build_valid_triples(ts_aligns, pb_aligns,
-                                   ilmn_strand="TOP",
                                    probe_seq="ACGT",
                                    topseq_a="ACGT", topseq_b="ACGG")
     assert triples == []
@@ -1099,6 +1168,45 @@ def test_refalt_v2_insertion_nm_na():
     assert ref == ""
     assert alt == "TCG"
     assert agree == "NM_N/A"
+
+
+def test_refalt_v2_insertion_nm_corrected_genome_has_alt_base():
+    """1-bp 'insertion' where the genome at final_pos actually has the alt base →
+    NM got Ref/Alt backwards; result must be flagged NM_corrected and alleles swapped."""
+    # NM says A is ref (empty) and B=G is alt (inserted). But the genome at final_pos
+    # has 'G' — i.e. G is truly the reference and the variant is a G→'' deletion.
+    ts_a = _ts("chr1", 1000, nm=0)
+    ts_b = _ts("chr1", 1000, nm=2)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "", "AlleleB": "G"}
+    fasta = MagicMock()
+    fasta.fetch.return_value = "G"
+    ref, alt, agree, _ = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
+    )
+    # Alleles are swapped: what NM called Alt ('G') is now Ref, the empty is Alt.
+    assert ref == "G"
+    assert alt == ""
+    assert agree == "NM_corrected"
+
+
+def test_refalt_v2_insertion_nm_corrected_minus_strand_complements_alt():
+    """On minus strand, the genome's forward-strand base must be complemented
+    before comparison with the alignment-strand alt char."""
+    ts_a = _ts("chr1", 1000, nm=0)
+    ts_b = _ts("chr1", 1000, nm=2)
+    ts_aligns = {"A": [ts_a], "B": [ts_b]}
+    info = {"AlleleA": "", "AlleleB": "C"}
+    fasta = MagicMock()
+    # genome '+' strand has 'G'. On minus strand (alignment orientation) the alt
+    # 'C' complements to 'G' on '+', which matches → NM_corrected triggers.
+    fasta.fetch.return_value = "G"
+    ref, alt, agree, _ = determine_ref_alt_v2(
+        "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "-"
+    )
+    assert ref == "C"
+    assert alt == ""
+    assert agree == "NM_corrected"
 
 
 # ── integration: new output columns ──────────────────────────────────────────

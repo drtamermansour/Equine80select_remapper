@@ -4,6 +4,10 @@ import pandas as pd
 from benchmark_compare import (
     normalise_chr, classify_marker, write_diff,
     stratify_by_coord_delta,
+    parse_snp_alleles, parse_topseq_alleles,
+    alleles_match_snp, check_flanking_context,
+    classify_explanatory,
+    compute_qc_impact, QC_STAGE_ORDER,
 )
 
 
@@ -73,6 +77,308 @@ def test_classify_coord_off_non_numeric_remapped_pos():
 def test_classify_coord_off_none_remapped_pos():
     # None remapped position → coord_off
     assert classify_marker(_mrow(pos=1000), _rrow(pos=None)) == "coord_off"
+
+
+def test_classify_uses_probe_strand_when_present():
+    """When remapped_probe_strand is '+' or '-', it takes precedence over TopSeq strand."""
+    m = _mrow(strand="+")
+    # TopSeq strand says - but probe strand says + → probe strand wins → correct
+    r = _rrow(strand="-")
+    r["remapped_probe_strand"] = "+"
+    assert classify_marker(m, r) == "correct"
+
+
+def test_classify_probe_strand_mismatch_is_strand_wrong():
+    """Probe strand differs from manifest strand (RefStrand) → coord_correct_strand_wrong."""
+    m = _mrow(strand="+")
+    r = _rrow(strand="+")  # TopSeq strand matches
+    r["remapped_probe_strand"] = "-"  # but probe strand disagrees
+    assert classify_marker(m, r) == "coord_correct_strand_wrong"
+
+
+def test_classify_probe_strand_na_exempts_topseq_only():
+    """remapped_probe_strand == 'N/A' → strand check skipped (topseq_only markers)."""
+    m = _mrow(strand="+")
+    r = _rrow(strand="-")
+    r["remapped_probe_strand"] = "N/A"
+    assert classify_marker(m, r) == "correct"
+
+
+def test_classify_falls_back_to_topseq_strand_when_probe_strand_absent():
+    """Backward compat: missing remapped_probe_strand key → use remapped_strand."""
+    m = _mrow(strand="+")
+    r = _rrow(strand="+")    # no probe_strand key
+    assert classify_marker(m, r) == "correct"
+    m2 = _mrow(strand="+")
+    r2 = _rrow(strand="-")
+    assert classify_marker(m2, r2) == "coord_correct_strand_wrong"
+
+
+# ── parse_snp_alleles ─────────────────────────────────────────────────────────
+
+def test_parse_snp_alleles_standard_snp():
+    assert parse_snp_alleles("[A/G]") == ("A", "G")
+
+def test_parse_snp_alleles_indel_returns_none():
+    """[D/I] is not a real sequence pair — return None."""
+    assert parse_snp_alleles("[D/I]") is None
+    assert parse_snp_alleles("[I/D]") is None
+
+def test_parse_snp_alleles_malformed_returns_none():
+    assert parse_snp_alleles("no_brackets") is None
+    assert parse_snp_alleles("") is None
+    assert parse_snp_alleles(None) is None
+
+
+# ── parse_topseq_alleles ──────────────────────────────────────────────────────
+
+def test_parse_topseq_alleles_snp():
+    """TopGenomicSeq with SNP: returns (prefix, A, B, suffix)."""
+    pre, a, b, post = parse_topseq_alleles("ACGTACGT[A/G]TACGTACG")
+    assert (pre, a, b, post) == ("ACGTACGT", "A", "G", "TACGTACG")
+
+def test_parse_topseq_alleles_deletion():
+    """Deletion — 'B' is empty string."""
+    pre, a, b, post = parse_topseq_alleles("ACGTACGT[CCCGGG/-]TACGTACG")
+    assert (pre, a, b, post) == ("ACGTACGT", "CCCGGG", "", "TACGTACG")
+
+def test_parse_topseq_alleles_insertion():
+    """Insertion — 'A' is empty string."""
+    pre, a, b, post = parse_topseq_alleles("ACGTACGT[-/CCCGGG]TACGTACG")
+    assert (pre, a, b, post) == ("ACGTACGT", "", "CCCGGG", "TACGTACG")
+
+def test_parse_topseq_alleles_malformed_returns_none():
+    assert parse_topseq_alleles("no_brackets") is None
+    assert parse_topseq_alleles("") is None
+
+
+# ── alleles_match_snp ─────────────────────────────────────────────────────────
+
+def test_alleles_match_snp_direct_on_plus_strand():
+    """Remapped + strand, alleles match manifest set → True."""
+    # Remapped Ref=A, Alt=G on + strand; manifest SNP=[A/G]
+    assert alleles_match_snp("A", "G", "+", ("A", "G")) is True
+
+def test_alleles_match_snp_swap_ok():
+    """Order of manifest and remapped alleles doesn't matter (set comparison)."""
+    assert alleles_match_snp("G", "A", "+", ("A", "G")) is True
+
+def test_alleles_match_snp_minus_strand_needs_rc():
+    """Remapped on - strand: Ref/Alt must RC to match manifest."""
+    # Remapped Ref=T, Alt=C on - strand → fwd_Ref=A, fwd_Alt=G; matches {A,G}
+    assert alleles_match_snp("T", "C", "-", ("A", "G")) is True
+
+def test_alleles_match_snp_ambiguous_pair_at_passes():
+    """A/T SNP: {A,T} equals its own complement, so either strand matches."""
+    assert alleles_match_snp("A", "T", "+", ("A", "T")) is True
+    assert alleles_match_snp("A", "T", "-", ("A", "T")) is True   # RC = {T,A}
+
+def test_alleles_match_snp_mismatch():
+    """Different alleles that do not match directly *or* via complement → False."""
+    # Remapped {A, G} → direct set {A, G}, complement set {T, C}
+    # Manifest {A, C} is not equal to either → False
+    assert alleles_match_snp("A", "G", "+", ("A", "C")) is False
+
+def test_alleles_match_snp_complement_only_match():
+    """Manifest and remapped alleles only match after both-complement — True.
+
+    Covers the case where RefStrand says + but the SNP column is in the opposite
+    convention: {complement(Ref), complement(Alt)} == {SNP_A, SNP_B}.
+    """
+    # Remapped Ref=A, Alt=G (stored on + strand); manifest SNP=[T/C].
+    # {A, G} != {T, C}; but {complement(A), complement(G)} == {T, C} → True.
+    assert alleles_match_snp("A", "G", "+", ("T", "C")) is True
+
+
+# ── check_flanking_context ────────────────────────────────────────────────────
+
+class _FakeFasta:
+    """Minimal stub of pysam.FastaFile for tests."""
+    def __init__(self, seqs):
+        self._seqs = seqs     # {chrom: full_sequence}
+    def fetch(self, chrom, start, end):
+        return self._seqs[chrom][start:end]
+
+
+def test_check_flanking_context_forward_match():
+    """Genome left == PREFIX suffix, genome right == SUFFIX prefix (forward)."""
+    # Place the variant at 1-based position 21; PREFIX=10bp, SUFFIX=10bp
+    seq = "ACGTACGTAC" + "N" + "TACGTACGTA"   # 21 bp, variant is 'N' at index 10
+    fasta = _FakeFasta({"chr1": seq})
+    fwd, rev = check_flanking_context(fasta, "chr1", mapinfo=11, prefix="ACGTACGTAC",
+                                       suffix="TACGTACGTA", allele_len=1, flank_len=10)
+    assert fwd is True
+    assert rev is False
+
+
+def test_check_flanking_context_reverse_match():
+    """Genome flanking matches RC(SUFFIX) and RC(PREFIX) — reverse orientation."""
+    import importlib
+    from remap_manifest import reverse_complement
+    prefix = "ACGTACGTAC"
+    suffix = "TACGTACGTA"
+    # Build genome that contains RC(SUFFIX) before, RC(PREFIX) after the variant
+    seq = reverse_complement(suffix) + "N" + reverse_complement(prefix)
+    fasta = _FakeFasta({"chr1": seq})
+    fwd, rev = check_flanking_context(fasta, "chr1", mapinfo=11, prefix=prefix,
+                                       suffix=suffix, allele_len=1, flank_len=10)
+    assert fwd is False
+    assert rev is True
+
+
+def test_check_flanking_context_no_match():
+    """Neither orientation matches — both False."""
+    fasta = _FakeFasta({"chr1": "G" * 100})
+    fwd, rev = check_flanking_context(fasta, "chr1", mapinfo=50, prefix="ACGTACGTAC",
+                                       suffix="TACGTACGTA", allele_len=1, flank_len=10)
+    assert fwd is False
+    assert rev is False
+
+
+# ── classify_explanatory ──────────────────────────────────────────────────────
+
+def test_classify_explanatory_manifest_strand_wrong():
+    """context_forward True + remapped_strand != RefStrand → verdict manifest_strand_wrong."""
+    row = {
+        "context_forward": True, "context_reverse": False,
+        "remapped_strand": "+", "manifest_strand": "-",
+        "coord_ok": True, "is_ambiguous_snp": False, "is_probe_only": False,
+        "is_indel": False,
+        "deletion_seq_ok": None, "insertion_absent": None,
+    }
+    assert classify_explanatory(row) == "manifest_strand_wrong"
+
+
+def test_classify_explanatory_pipeline_wrong_locus():
+    """Context fails at remapped MapInfo → pipeline_wrong_locus."""
+    row = {
+        "context_forward": False, "context_reverse": False,
+        "remapped_strand": "+", "manifest_strand": "+",
+        "coord_ok": True, "is_ambiguous_snp": False, "is_probe_only": False,
+        "is_indel": False,
+        "deletion_seq_ok": None, "insertion_absent": None,
+    }
+    assert classify_explanatory(row) == "pipeline_wrong_locus"
+
+
+def test_classify_explanatory_pipeline_wrong_strand():
+    """context_reverse True, context_forward False, strand disagrees → pipeline_wrong_strand."""
+    row = {
+        "context_forward": False, "context_reverse": True,
+        "remapped_strand": "+", "manifest_strand": "-",
+        "coord_ok": True, "is_ambiguous_snp": False, "is_probe_only": False,
+        "is_indel": False,
+        "deletion_seq_ok": None, "insertion_absent": None,
+    }
+    assert classify_explanatory(row) == "pipeline_wrong_strand"
+
+
+def test_classify_explanatory_ambiguous_snp():
+    row = {
+        "context_forward": True, "context_reverse": True,
+        "remapped_strand": "+", "manifest_strand": "+",
+        "coord_ok": True, "is_ambiguous_snp": True, "is_probe_only": False,
+        "is_indel": False,
+        "deletion_seq_ok": None, "insertion_absent": None,
+    }
+    assert classify_explanatory(row) == "ambiguous_snp"
+
+
+def test_classify_explanatory_probe_only_inconclusive():
+    row = {
+        "context_forward": False, "context_reverse": False,
+        "remapped_strand": "+", "manifest_strand": "+",
+        "coord_ok": True, "is_ambiguous_snp": False, "is_probe_only": True,
+        "is_indel": False,
+        "deletion_seq_ok": None, "insertion_absent": None,
+    }
+    assert classify_explanatory(row) == "probe_only_inconclusive"
+
+
+def test_classify_explanatory_unresolved():
+    row = {
+        "context_forward": True, "context_reverse": False,
+        "remapped_strand": "+", "manifest_strand": "+",
+        "coord_ok": False, "is_ambiguous_snp": False, "is_probe_only": False,
+        "is_indel": False,
+        "deletion_seq_ok": None, "insertion_absent": None,
+    }
+    # context matches at our coord, our coord != manifest coord → manifest_coord_wrong
+    assert classify_explanatory(row) == "manifest_coord_wrong"
+
+
+# ── compute_qc_impact ─────────────────────────────────────────────────────────
+
+def _impact_fixture():
+    """Small synthetic result_df for QC impact tests.
+
+    Rows:
+      - 3 passed all QC + correct
+      - 1 passed all QC + coord_off  (false negative)
+      - 2 removed at stage_5 + correct (false positive x2)
+      - 1 removed at stage_5 + coord_off
+      - 1 removed at stage_10 + unmapped
+    Total 8 rows.
+    """
+    return pd.DataFrame({
+        "Name":         [f"m{i}" for i in range(8)],
+        "why_filtered": ["", "", "", "",
+                         "stage_5_refalt_conf", "stage_5_refalt_conf",
+                         "stage_5_refalt_conf", "stage_10_polymorphic"],
+        "result":       ["correct", "correct", "correct", "coord_off",
+                         "correct", "correct",
+                         "coord_off", "unmapped"],
+    })
+
+
+def test_compute_qc_impact_passed_counts():
+    impact = compute_qc_impact(_impact_fixture())
+    assert impact["passed_n"] == 4
+    assert impact["passed_correct"] == 3
+    assert impact["passed_accuracy_pct"] == pytest.approx(75.0)
+
+
+def test_compute_qc_impact_per_stage_precision():
+    impact = compute_qc_impact(_impact_fixture())
+    per_stage = dict((s, (n, nc, pct)) for s, n, nc, pct in impact["per_stage"])
+    # stage_5: 3 removed, 1 non-correct (the coord_off one) → precision 33.3%
+    assert per_stage["stage_5_refalt_conf"] == pytest.approx((3, 1, 33.333333), abs=0.01)
+    # stage_10: 1 removed, 1 non-correct → precision 100%
+    assert per_stage["stage_10_polymorphic"] == pytest.approx((1, 1, 100.0), abs=0.01)
+
+
+def test_compute_qc_impact_fp_and_fn_identification():
+    impact = compute_qc_impact(_impact_fixture())
+    # FP: 2 correct markers removed at stage_5
+    assert len(impact["fp_df"]) == 2
+    assert set(impact["fp_df"]["Name"]) == {"m4", "m5"}
+    # FN: 1 non-correct marker surviving (coord_off at m3)
+    assert len(impact["fn_df"]) == 1
+    assert list(impact["fn_df"]["Name"]) == ["m3"]
+
+
+def test_compute_qc_impact_cumulative_accuracy_monotonic_to_final():
+    """Cumulative passing-set ends at the 'all QC applied' count."""
+    impact = compute_qc_impact(_impact_fixture())
+    final_label, final_n, final_c, final_acc = impact["cumulative"][-1]
+    assert final_label == QC_STAGE_ORDER[-1]   # stage_11_ambiguous_snp (no rejections in fixture)
+    assert final_n == impact["passed_n"]
+    assert final_c == impact["passed_correct"]
+
+
+def test_compute_qc_impact_cumulative_accuracy_rises_when_stage_removes_only_errors():
+    """When a stage removes only non-correct markers, accuracy goes up."""
+    df = pd.DataFrame({
+        "Name": ["a", "b", "c", "d"],
+        "why_filtered": ["stage_10_polymorphic", "stage_10_polymorphic", "", ""],
+        "result": ["coord_off", "unmapped", "correct", "correct"],
+    })
+    impact = compute_qc_impact(df)
+    # Before QC: 4 markers, 2 correct → 50%
+    assert impact["cumulative"][0] == pytest.approx(("(before QC)", 4, 2, 50.0), abs=0.01)
+    # After stage_10 removes the 2 non-correct ones: 2 markers, 2 correct → 100%
+    after_s10 = next(t for t in impact["cumulative"] if t[0] == "stage_10_polymorphic")
+    assert after_s10 == pytest.approx(("stage_10_polymorphic", 2, 2, 100.0), abs=0.01)
 
 
 # ── load_manifest ─────────────────────────────────────────────────────────────

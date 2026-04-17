@@ -40,8 +40,7 @@ import pysam
 # IUPAC ambiguity codes (excluding N/n) → A; str.translate is O(n) C-level loop
 _IUPAC_TO_A = str.maketrans("MRWSYKBDHVmrwsykbdhv", "A" * 20)
 
-# Nucleotide complement lookup (single-base)
-_COMP = {"A": "T", "T": "A", "C": "G", "G": "C"}
+from _strand_utils import strand_normalize
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -89,11 +88,36 @@ def locate_data_section(filename, start_marker="[Assay]", end_marker="[Controls]
 
 # ── SEQUENCE HELPERS ─────────────────────────────────────────────────────────
 
-_RC_TABLE = str.maketrans("ACGTacgt", "TGCAtgca")
-
 def reverse_complement(seq):
-    """Return the reverse complement of a DNA sequence (supports upper and lower case)."""
-    return seq.translate(_RC_TABLE)[::-1]
+    """Return the reverse complement of a DNA sequence (upper or lower case).
+
+    Thin wrapper over ``_strand_utils.strand_normalize(seq, "-")`` so that the
+    reverse-complement table lives in exactly one place in the codebase.
+    """
+    return strand_normalize(seq, "-")
+
+
+def _kmer_orientation(probe_seq, topseq_a, k=21):
+    """
+    Sequence-based fallback when substring matching cannot decide orientation.
+
+    Builds k-mer sets for probe_seq, reverse_complement(probe_seq), and topseq_a,
+    and returns whichever probe orientation shares more k-mers with topseq_a.
+    Uses topseq_a only — at k=21 topseq_b differs only at the variant base and
+    would not change the decision.
+
+    Always returns "same" or "complement"; ties and degenerate inputs resolve
+    to "same".
+    """
+    if not probe_seq or not topseq_a or len(probe_seq) < k or len(topseq_a) < k:
+        return "same"
+    rc = reverse_complement(probe_seq)
+    topseq_kmers = {topseq_a[i:i + k] for i in range(len(topseq_a) - k + 1)}
+    fwd_kmers    = {probe_seq[i:i + k] for i in range(len(probe_seq) - k + 1)}
+    rc_kmers     = {rc[i:i + k]       for i in range(len(rc) - k + 1)}
+    fwd_hits = len(fwd_kmers & topseq_kmers)
+    rc_hits  = len(rc_kmers  & topseq_kmers)
+    return "same" if fwd_hits >= rc_hits else "complement"
 
 
 def extract_candidates(top_seq):
@@ -116,59 +140,43 @@ def probe_topseq_orientation(probe_seq, topseq_a, topseq_b):
     """
     Determine the orientation of a probe relative to TopGenomicSeq by sequence comparison.
 
-    Returns:
-      "same"       — probe (as-is) is a substring of topseq_a or topseq_b
-      "complement" — RC(probe) is a substring of topseq_a or topseq_b
-      "unknown"    — neither matches
+    Fast path — substring presence in topseq_a or topseq_b:
+      "same"       — probe (as-is) is a substring
+      "complement" — RC(probe) is a substring
+    Fallback — k-mer overlap against topseq_a (k=21) via _kmer_orientation.
+
+    Always returns "same" or "complement" — never "unknown".
     """
     if probe_seq in topseq_a or probe_seq in topseq_b:
         return "same"
     rc = reverse_complement(probe_seq)
     if rc in topseq_a or rc in topseq_b:
         return "complement"
-    return "unknown"
+    return _kmer_orientation(probe_seq, topseq_a)
 
 
-def compute_probe_strand_agreement(ilmn_strand, topseq_strand, probe_align_strand,
+def compute_probe_strand_agreement(topseq_strand, probe_align_strand,
                                    probe_seq, topseq_a, topseq_b):
     """
-    Compute the probe strand and whether it agrees with the IlmnStrand expectation.
+    Compute probe strand and whether it agrees with the sequence-derived expectation.
 
-    For IlmnStrand TOP/BOT: uses the probe alignment strand directly.
-      TOP → probe strand expected to match TopSeq strand.
-      BOT → probe strand expected to be opposite to TopSeq strand.
+    The expected probe-vs-TopSeq strand relationship is derived purely from
+    sequence comparison via probe_topseq_orientation (substring fast path +
+    21-mer fallback against topseq_a). IlmnStrand is not consulted.
 
-    For IlmnStrand PLUS/MINUS: uses sequence comparison (probe_topseq_orientation).
-      PLUS → probe expected on '+' strand.
-      MINUS → probe expected on '-' strand.
+      orientation == "same"       → expected_probe_strand = topseq_strand
+      orientation == "complement" → expected_probe_strand = flip(topseq_strand)
 
-    Returns (probe_strand, agreement_as_expected) as strings:
-      probe_strand          : '+', '-', or 'N/A'
-      agreement_as_expected : 'True', 'False', or 'N/A'
+    Returns (probe_strand, agreement_as_expected):
+      probe_strand          : '+' or '-' — pass-through of probe_align_strand
+      agreement_as_expected : 'True' or 'False' — never 'N/A'
     """
-    ilmn = ilmn_strand.upper() if ilmn_strand else ""
-
-    if ilmn in ("TOP", "BOT"):
-        probe_strand = probe_align_strand
-        if ilmn == "TOP":
-            agreement = (probe_align_strand == topseq_strand)
-        else:  # BOT
-            agreement = (probe_align_strand != topseq_strand)
-        return probe_strand, str(agreement)
-
-    if ilmn in ("PLUS", "MINUS"):
-        orientation = probe_topseq_orientation(probe_seq, topseq_a, topseq_b)
-        if orientation == "unknown":
-            return "N/A", "N/A"
-        # Derive absolute probe strand from orientation + TopSeq strand
-        if orientation == "same":
-            probe_strand = topseq_strand
-        else:  # complement
-            probe_strand = "-" if topseq_strand == "+" else "+"
-        expected_strand = "+" if ilmn == "PLUS" else "-"
-        return probe_strand, str(probe_strand == expected_strand)
-
-    return "N/A", "N/A"
+    orientation = probe_topseq_orientation(probe_seq, topseq_a, topseq_b)
+    if orientation == "same":
+        expected_strand = topseq_strand
+    else:  # "complement"
+        expected_strand = "-" if topseq_strand == "+" else "+"
+    return probe_align_strand, str(probe_align_strand == expected_strand)
 
 # ── CIGAR UTILITIES ──────────────────────────────────────────────────────────
 
@@ -437,15 +445,17 @@ def _make_competing_rows(pairs, reason):
     return rows
 
 
-def build_valid_triples(ts_aligns, probe_aligns, ilmn_strand,
+def build_valid_triples(ts_aligns, probe_aligns,
                         probe_seq, topseq_a, topseq_b):
     """
     Enumerate valid (TopSeq_allele, ts_align, probe_align) triples.
 
     Validity requires:
       1. ts and probe on the same chromosome.
-      2. Strand agreement: compute_probe_strand_agreement must return 'True'.
-         If it returns 'N/A' (IlmnStrand unknown), the probe is kept.
+      2. Strand agreement (sequence-derived): compute_probe_strand_agreement
+         must return 'True'. Expected probe strand is derived from
+         probe_topseq_orientation + topseq_strand (21-mer fallback guarantees
+         a decision — no 'N/A' is returned).
       3. Among strand-valid probes on the same chromosome, keep only the one
          with the highest overlap with ts (overlap-max selection).
       4. overlap(ts, best_probe) > 0.
@@ -459,18 +469,17 @@ def build_valid_triples(ts_aligns, probe_aligns, ilmn_strand,
             same_chr = [pb for pb in probe_aligns if pb["Chr"] == ts["Chr"]]
             if not same_chr:
                 continue
-            # Strand-filter: keep probes where agreement == 'True' or 'N/A'
+            # Strand-filter: keep probes where sequence-derived agreement is True
             strand_valid = []
             for pb in same_chr:
                 _, agreement = compute_probe_strand_agreement(
-                    ilmn_strand=ilmn_strand,
                     topseq_strand=ts["Strand"],
                     probe_align_strand=pb["Strand"],
                     probe_seq=probe_seq,
                     topseq_a=topseq_a,
                     topseq_b=topseq_b,
                 )
-                if agreement in ("True", "N/A"):
+                if agreement == "True":
                     strand_valid.append(pb)
             if not strand_valid:
                 continue
@@ -758,12 +767,8 @@ def resolve_ref_from_genome(fasta, chr_, var_pos, allele_a_char, allele_b_char, 
     except (ValueError, KeyError):
         return None
 
-    if strand == "-":
-        cmp_a = _COMP.get(allele_a_char, allele_a_char)
-        cmp_b = _COMP.get(allele_b_char, allele_b_char)
-    else:
-        cmp_a = allele_a_char
-        cmp_b = allele_b_char
+    cmp_a = strand_normalize(allele_a_char, strand)
+    cmp_b = strand_normalize(allele_b_char, strand)
 
     if ref_base == cmp_a:
         return allele_a_char, allele_b_char
@@ -838,8 +843,7 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
             if len(alt_char) == 1:
                 try:
                     genome_base = fasta.fetch(chr_, final_pos - 1, final_pos).upper()
-                    alt_fwd = (_COMP.get(alt_char, alt_char)
-                               if strand == "-" else alt_char)
+                    alt_fwd = strand_normalize(alt_char, strand)
                     if genome_base == alt_fwd:
                         # Genome confirms alt_char is actually Ref; swap.
                         return alt_char, ref_char, "NM_corrected", final_pos
@@ -1076,13 +1080,13 @@ class DecisionCounters:
         lines.append("")
         lines.append(f"  CoordDelta Distribution (of {coord_diag_total:,} markers):")
         row("CoordDelta = 0    (probe = cigar):",              self.coord_delta_0,    indent=1)
-        row("CoordDelta = 1    (small diff \u2192 probe used):",   self.coord_delta_1,    indent=1)
-        row("CoordDelta \u2265 2    (large diff \u2192 cigar used):",   self.coord_delta_ge2,  indent=1)
-        row("CoordDelta = \u22121   (SNP in soft clip, no cigar):", self.coord_delta_neg1, indent=1)
+        row("CoordDelta = 1    (small diff \u2192 probe_cigar used):",  self.coord_delta_1,    indent=1)
+        row("CoordDelta \u2265 2    (large diff \u2192 topseq_cigar used):", self.coord_delta_ge2,  indent=1)
+        row("CoordDelta = \u22121   (SNP in soft clip, no topseq cigar):", self.coord_delta_neg1, indent=1)
         lines.append("")
         lines.append("  CoordSource Breakdown:")
-        row("probe  (MapInfo = probe coord):", self.coord_source_probe, indent=1)
-        row("cigar  (MapInfo = cigar coord):", self.coord_source_cigar, indent=1)
+        row("probe_cigar  (MapInfo = probe CIGAR coord):",  self.coord_source_probe, indent=1)
+        row("topseq_cigar (MapInfo = TopSeq CIGAR coord):", self.coord_source_cigar, indent=1)
         lines.append("")
         lines.append("  Ref/Alt Diagnostics (topseq_n_probe Chr\u22600):")
         row("NM tie resolved by ref lookup:", self.ref_alt_ref_resolved, indent=1)
@@ -1191,10 +1195,11 @@ def run_remapping(args):
             raw_topseq = row.get("TopGenomicSeq", "")
             if raw_topseq:
                 raw_topseq = raw_topseq.translate(_IUPAC_TO_A)
+            # extract_candidates already normalises "-" → ""; no need to re-strip here.
             pre, a, b, post = extract_candidates(raw_topseq)
             if pre is not None:
-                seq_a = pre + (a if a != "-" else "") + post
-                seq_b = pre + (b if b != "-" else "") + post
+                seq_a = pre + a + post
+                seq_b = pre + b + post
                 ft.write(f">{name}_A\n{seq_a}\n")
                 ft.write(f">{name}_B\n{seq_b}\n")
                 candidates_info[name] = {
@@ -1327,7 +1332,6 @@ def run_remapping(args):
                 counters.final_unmapped += 1
                 continue
 
-            ilmn_strand = str(row.get("IlmnStrand", "")).strip().upper()
             probe_seq   = str(row.get("AlleleA_ProbeSeq", ""))
             topseq_a    = info.get("TopSeqA", "")
             topseq_b    = info.get("TopSeqB", "")
@@ -1335,8 +1339,7 @@ def run_remapping(args):
 
             # ── Locus anchoring ──────────────────────────────────────────────
             triples = build_valid_triples(ts_aligns, pb_aligns,
-                                           ilmn_strand, probe_seq,
-                                           topseq_a, topseq_b)
+                                           probe_seq, topseq_a, topseq_b)
 
             winning_allele = winning_ts = winning_pb = None
             anchor = tie_status = None
@@ -1426,8 +1429,7 @@ def run_remapping(args):
                             genome_base = fasta.fetch(
                                 best_ts["Chr"], cigar_coord - 1, cigar_coord
                             ).upper()
-                            ref_char_fwd = (_COMP.get(ref_char, ref_char)
-                                            if best_ts["Strand"] == "-" else ref_char)
+                            ref_char_fwd = strand_normalize(ref_char, best_ts["Strand"])
                             ref_base_match_str = "True" if genome_base == ref_char_fwd else "False"
                             if ref_base_match_str == "False":
                                 counters.ref_base_mismatch += 1
@@ -1448,7 +1450,7 @@ def run_remapping(args):
                     new_cols[col_cigar_coord].append(cigar_coord)
                     new_cols[col_probe_coord].append(0)
                     new_cols[col_coord_delta].append(-1)
-                    new_cols[col_coord_source].append("cigar")
+                    new_cols[col_coord_source].append("topseq_cigar")
                     new_cols[col_ref_match].append(ref_base_match_str)
                     new_cols[col_probe_strand].append("N/A")
                     new_cols[col_strand_agree].append("N/A")
@@ -1527,7 +1529,7 @@ def run_remapping(args):
                     new_cols[col_cigar_coord].append(0)
                     new_cols[col_probe_coord].append(pb_coord)
                     new_cols[col_coord_delta].append(-1)
-                    new_cols[col_coord_source].append("probe")
+                    new_cols[col_coord_source].append("probe_cigar")
                     new_cols[col_ref_match].append("N/A")
                     new_cols[col_probe_strand].append(best_pb["Strand"])
                     new_cols[col_strand_agree].append("N/A")
@@ -1567,7 +1569,7 @@ def run_remapping(args):
                 cigar_out       = 0
                 coord_delta_val = -1
                 final_pos       = c_pos
-                coord_source    = "probe"
+                coord_source    = "probe_cigar"
                 counters.coord_delta_neg1 += 1
                 counters.coord_source_probe += 1
             else:
@@ -1581,11 +1583,11 @@ def run_remapping(args):
                     counters.coord_delta_ge2 += 1
                 if is_indel or coord_delta_val >= 2:
                     final_pos    = cigar_coord
-                    coord_source = "cigar"
+                    coord_source = "topseq_cigar"
                     counters.coord_source_cigar += 1
                 else:
                     final_pos    = c_pos
-                    coord_source = "probe"
+                    coord_source = "probe_cigar"
                     counters.coord_source_probe += 1
 
             # Ref/Alt determination (uses final_pos = MapInfo)
@@ -1621,13 +1623,12 @@ def run_remapping(args):
 
             # Deletion minus-strand coordinate correction
             if len(ref_char) > len(alt_char) and winning_ts["Strand"] == "-":
-                if coord_source == "probe":
+                if coord_source == "probe_cigar":
                     final_pos -= len(ref_char) - len(alt_char)
                     c_pos     -= len(ref_char) - len(alt_char)
 
-            # Probe strand agreement (reporting only)
+            # Probe strand agreement (sequence-derived; reporting only)
             pb_strand, sa_expected = compute_probe_strand_agreement(
-                ilmn_strand=ilmn_strand,
                 topseq_strand=winning_ts["Strand"],
                 probe_align_strand=winning_pb["Strand"],
                 probe_seq=probe_seq,
@@ -1644,8 +1645,7 @@ def run_remapping(args):
                     genome_base = fasta.fetch(
                         winning_ts["Chr"], final_pos - 1, final_pos
                     ).upper()
-                    ref_char_fwd = (_COMP.get(ref_char, ref_char)
-                                    if winning_ts["Strand"] == "-" else ref_char)
+                    ref_char_fwd = strand_normalize(ref_char, winning_ts["Strand"])
                     ref_base_match_str = "True" if genome_base == ref_char_fwd else "False"
                     if ref_base_match_str == "False":
                         counters.ref_base_mismatch += 1

@@ -14,10 +14,13 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 from datetime import datetime
 
 import pandas as pd
+
+from _strand_utils import strand_normalize, complement
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -26,8 +29,15 @@ def parse_args():
     p.add_argument("--manifest",    required=True, help="Illumina manifest CSV (EquCab3-native, GenomeBuild=3)")
     p.add_argument("--remapped",    required=True, help="*_remapped_{assembly}.csv from remap_manifest.py")
     p.add_argument("--assembly",    required=True, help="Assembly label (e.g. equCab3)")
+    p.add_argument("--reference",   default=None,
+                   help="Reference genome FASTA (enables the explanatory layer with context-based verdicts)")
     p.add_argument("--output-dir",  default="./benchmark_out", help="Output directory (default: ./benchmark_out)")
     p.add_argument("--baseline",    default=None,  help="Path to prior benchmark_<timestamp>.tsv for diff")
+    p.add_argument("--flank-len",   type=int, default=20,
+                   help="Flank length for context-match checks (default: 20 bp)")
+    p.add_argument("--traced",      default=None,
+                   help="Path to {prefix}_remapped_{assembly}_traced.csv from qc_filter.py; "
+                        "enables the QC filtration impact section")
     return p.parse_args()
 
 
@@ -38,6 +48,138 @@ def normalise_chr(chrom: str) -> str:
     if str(chrom).startswith("X_"):
         return "X"
     return str(chrom)
+
+
+# ── ALLELE PARSING ────────────────────────────────────────────────────────────
+
+_BRACKET_RE = re.compile(r"\[(.+?)/(.+?)\]")
+AMBIGUOUS_PAIRS = (frozenset({"A", "T"}), frozenset({"C", "G"}))
+
+
+def parse_snp_alleles(snp_col):
+    """Parse manifest SNP column (e.g. '[A/G]') into (A, B) single-base pair.
+
+    Returns None for indels ('[D/I]'), empty/None input, or malformed strings.
+    """
+    if not snp_col:
+        return None
+    m = _BRACKET_RE.search(str(snp_col))
+    if not m:
+        return None
+    a, b = m.group(1), m.group(2)
+    # Reject indel-label markers
+    if {a.upper(), b.upper()} == {"D", "I"}:
+        return None
+    # Require single-base alleles; multi-base means indel-in-SNP-column, not a SNP
+    if len(a) != 1 or len(b) != 1:
+        return None
+    return a.upper(), b.upper()
+
+
+def parse_topseq_alleles(topseq_col):
+    """Parse TopGenomicSeq 'PREFIX[A/B]SUFFIX' into (prefix, A, B, suffix).
+
+    The '-' placeholder (as in '[CCC/-]') is normalised to empty string so that
+    deletion / insertion alleles are represented by their real sequences.
+    Returns None for malformed input.
+    """
+    if not topseq_col:
+        return None
+    m = _BRACKET_RE.search(str(topseq_col))
+    if not m:
+        return None
+    pre_end = m.start()
+    post_start = m.end()
+    a = "" if m.group(1) == "-" else m.group(1)
+    b = "" if m.group(2) == "-" else m.group(2)
+    return str(topseq_col)[:pre_end], a, b, str(topseq_col)[post_start:]
+
+
+def alleles_match_snp(remapped_ref, remapped_alt, remapped_strand,
+                      manifest_pair) -> bool:
+    """True iff the remapped SNP alleles match the manifest {A,B} pair.
+
+    Both strand-normalised and complemented sets are tried to accommodate SNP
+    columns that use the opposite strand convention. Returns False for indels
+    (manifest_pair is None).
+    """
+    if manifest_pair is None:
+        return False
+    if not remapped_ref or not remapped_alt:
+        return False
+    fwd_ref = strand_normalize(remapped_ref, remapped_strand).upper()
+    fwd_alt = strand_normalize(remapped_alt, remapped_strand).upper()
+    fwd_set = {fwd_ref, fwd_alt}
+    manifest_set = {manifest_pair[0].upper(), manifest_pair[1].upper()}
+    if fwd_set == manifest_set:
+        return True
+    comp_set = {complement(fwd_ref).upper(), complement(fwd_alt).upper()}
+    return comp_set == manifest_set
+
+
+# ── CONTEXT CHECKING (explanatory layer) ──────────────────────────────────────
+
+def check_flanking_context(fasta, chrom, mapinfo, prefix, suffix,
+                            allele_len, flank_len=20):
+    """Return (forward_match, reverse_match) for the genome flanking at mapinfo.
+
+    Forward test: genome[left] == prefix[-flank:] AND genome[right] == suffix[:flank].
+    Reverse test: genome[left] == RC(suffix)[-flank:] AND genome[right] == RC(prefix)[:flank].
+
+    mapinfo is 1-based start of the variant base; allele_len is the length of the
+    reference allele at the locus (0 for a pure insertion; L for a deletion / SNP).
+    """
+    if not prefix or not suffix:
+        return (False, False)
+    k = min(flank_len, len(prefix), len(suffix))
+    if k == 0:
+        return (False, False)
+    left_start = mapinfo - 1 - k
+    if left_start < 0:
+        return (False, False)
+    right_start = mapinfo - 1 + allele_len
+    try:
+        left  = fasta.fetch(chrom, left_start, mapinfo - 1).upper()
+        right = fasta.fetch(chrom, right_start, right_start + k).upper()
+    except (ValueError, KeyError):
+        return (False, False)
+    fwd = (left == prefix[-k:].upper()) and (right == suffix[:k].upper())
+    rc_prefix = strand_normalize(prefix, "-").upper()
+    rc_suffix = strand_normalize(suffix, "-").upper()
+    rev = (left == rc_suffix[-k:]) and (right == rc_prefix[:k])
+    return (fwd, rev)
+
+
+# ── EXPLANATORY VERDICT ───────────────────────────────────────────────────────
+
+def classify_explanatory(row) -> str:
+    """Produce a single verdict string from raw explanatory signals.
+
+    Expected keys in *row*: context_forward, context_reverse, manifest_strand,
+    remapped_strand, coord_ok, is_ambiguous_snp, is_probe_only, is_indel,
+    deletion_seq_ok, insertion_absent.
+    """
+    fwd         = bool(row.get("context_forward"))
+    rev         = bool(row.get("context_reverse"))
+    coord_ok    = bool(row.get("coord_ok"))
+    m_strand    = row.get("manifest_strand")
+    r_strand    = row.get("remapped_strand")
+    is_amb      = bool(row.get("is_ambiguous_snp"))
+    is_po       = bool(row.get("is_probe_only"))
+
+    if is_amb and fwd:
+        return "ambiguous_snp"
+    if fwd and (r_strand != m_strand):
+        return "manifest_strand_wrong"
+    if rev and (r_strand != m_strand) and not fwd:
+        return "pipeline_wrong_strand"
+    if fwd and not coord_ok:
+        return "manifest_coord_wrong"
+    if not fwd and not rev:
+        if is_po:
+            return "probe_only_inconclusive"
+        return "pipeline_wrong_locus"
+    return "unresolved"
 
 
 # ── COMPARISON ────────────────────────────────────────────────────────────────
@@ -53,6 +195,13 @@ def classify_marker(manifest_row: dict, remapped_row: dict) -> str:
       coord_off — Chr match but MapInfo differs
       coord_correct_strand_wrong — Chr+MapInfo match but Strand differs
       correct   — all three match
+
+    Strand comparison: when `remapped_probe_strand` is provided it takes priority
+    over `remapped_strand` (TopSeq alignment strand is uncorrelated with
+    RefStrand; probe alignment strand is the right ground-truth comparison).
+    A probe strand of "N/A" (topseq_only markers without a probe alignment)
+    exempts the marker from the strand check. Missing probe strand falls back
+    to `remapped_strand` for backward compatibility.
     """
     m_chr    = normalise_chr(manifest_row["manifest_chr"])
     m_pos    = manifest_row["manifest_pos"]
@@ -61,6 +210,7 @@ def classify_marker(manifest_row: dict, remapped_row: dict) -> str:
     r_chr    = normalise_chr(remapped_row["remapped_chr"])
     r_pos    = remapped_row["remapped_pos"]
     r_strand = remapped_row["remapped_strand"]
+    r_probe_strand = remapped_row.get("remapped_probe_strand")
     r_status = remapped_row["remapped_status"]
 
     # Priority 1: unmapped
@@ -84,8 +234,15 @@ def classify_marker(manifest_row: dict, remapped_row: dict) -> str:
     except (ValueError, TypeError):
         return "coord_off"
 
-    # Priority 5: strand wrong
-    if str(r_strand) != str(m_strand):
+    # Priority 5: strand wrong (probe strand preferred; N/A exempts; None falls back)
+    if r_probe_strand in ("+", "-"):
+        strand_to_compare = r_probe_strand
+    elif r_probe_strand in ("N/A", "nan"):
+        strand_to_compare = None          # topseq_only: exempt from strand check
+    else:
+        strand_to_compare = r_strand      # missing column: fall back to TopSeq strand
+
+    if strand_to_compare is not None and str(strand_to_compare) != str(m_strand):
         return "coord_correct_strand_wrong"
 
     return "correct"
@@ -121,8 +278,13 @@ def load_manifest(path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
       chry_df  — Chr == Y
       chr0_df  — Chr == 0 or MapInfo == 0
 
-    All DataFrames have columns: Name, manifest_chr, manifest_pos, manifest_strand
+    All DataFrames have columns:
+      Name, manifest_chr, manifest_pos, manifest_strand, SNP, TopGenomicSeq
     Chr is normalised (X_NC_009175.3 → X) in all three.
+
+    manifest_strand is read directly from RefStrand (± relative to reference).
+    SourceStrand / IlmnStrand are NOT consulted — TOP/BOT/PLUS/MINUS do not map to
+    reference-strand orientation reliably.
     """
     header_line, footer_line = _locate_assay_section(path)
     nrows = (footer_line - header_line - 1) if footer_line is not None else None
@@ -132,18 +294,15 @@ def load_manifest(path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         skiprows=header_line,
         nrows=nrows,
         dtype={"Chr": str, "MapInfo": str},
-        usecols=["Name", "Chr", "MapInfo", "SourceStrand"],
+        usecols=["Name", "Chr", "MapInfo", "RefStrand", "SNP", "TopGenomicSeq"],
         low_memory=False,
     )
     df = df.rename(columns={"Chr": "manifest_chr", "MapInfo": "manifest_pos",
-                             "SourceStrand": "manifest_strand"})
+                             "RefStrand": "manifest_strand"})
     df["manifest_chr"] = df["manifest_chr"].apply(normalise_chr)
     df["manifest_pos"] = pd.to_numeric(df["manifest_pos"], errors="coerce").fillna(0).astype(int)
-    # Normalise Illumina strand notation to +/-
-    _ilmn_map = {"TOP": "+", "PLUS": "+", "BOT": "-", "MINUS": "-"}
-    df["manifest_strand"] = df["manifest_strand"].str.upper().map(
-        lambda s: _ilmn_map.get(s, s)
-    )
+    # RefStrand is already '+' or '-'; pass through unchanged.
+    df["manifest_strand"] = df["manifest_strand"].astype(str)
 
     # Partition
     is_y    = df["manifest_chr"] == "Y"
@@ -178,6 +337,9 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
     col_chr    = f"Chr_{assembly}"
     col_pos    = f"MapInfo_{assembly}"
     col_strand = f"Strand_{assembly}"
+    col_probe_strand = f"ProbeStrand_{assembly}"
+    col_ref    = f"Ref_{assembly}"
+    col_alt    = f"Alt_{assembly}"
     col_status = f"MappingStatus_{assembly}"   # old schema
     col_anchor = f"anchor_{assembly}"          # new schema
     col_tie    = f"tie_{assembly}"             # new schema
@@ -199,6 +361,8 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
             f"Check that --assembly matches the assembly used when running remap_manifest.py."
         )
     has_delta = col_delta in header.columns
+    has_refalt = col_ref in header.columns and col_alt in header.columns
+    has_probe_strand = col_probe_strand in header.columns
 
     usecols = ["Name", col_chr, col_pos, col_strand]
     if has_new_schema:
@@ -207,6 +371,10 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
         usecols.append(col_status)
     if has_delta:
         usecols.append(col_delta)
+    if has_refalt:
+        usecols += [col_ref, col_alt]
+    if has_probe_strand:
+        usecols.append(col_probe_strand)
 
     df = pd.read_csv(
         path,
@@ -214,6 +382,12 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
         usecols=usecols,
         low_memory=False,
     )
+    if df["Name"].duplicated().any():
+        dups = df["Name"][df["Name"].duplicated()].head(5).tolist()
+        raise ValueError(
+            f"Remapped CSV {path!r} contains duplicate Name values "
+            f"(first few: {dups}). Each marker must have a unique Name."
+        )
 
     # Build a unified remapped_status column
     if has_new_schema:
@@ -242,6 +416,11 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
     }
     if has_delta:
         rename_map[col_delta] = "coord_delta"
+    if has_refalt:
+        rename_map[col_ref] = "remapped_ref"
+        rename_map[col_alt] = "remapped_alt"
+    if has_probe_strand:
+        rename_map[col_probe_strand] = "remapped_probe_strand"
     df = df.rename(columns=rename_map)
     df["remapped_chr"] = df["remapped_chr"].apply(normalise_chr)
     df["remapped_pos"] = pd.to_numeric(df["remapped_pos"], errors="coerce")
@@ -250,13 +429,21 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
 
 # ── COMPARISON ────────────────────────────────────────────────────────────────
 
-def compare_all(manifest_df: pd.DataFrame, remapped_df: pd.DataFrame) -> pd.DataFrame:
+def compare_all(manifest_df: pd.DataFrame, remapped_df: pd.DataFrame,
+                 fasta=None, flank_len: int = 20) -> pd.DataFrame:
     """
     Left-join manifest onto remapped, classify each marker, compute coord_offset.
     Markers present in manifest but absent from remapped are classified as 'unmapped'.
 
+    When *fasta* (pysam.FastaFile) is supplied and the manifest includes
+    TopGenomicSeq/SNP columns, the output also contains per-marker explanatory
+    signals (context_forward, context_reverse, deletion_seq_ok, insertion_absent,
+    is_ambiguous_snp, is_probe_only, allele_ok) and a synthesised verdict column.
+
     Returns a DataFrame with all manifest columns plus:
-      remapped_chr, remapped_pos, remapped_strand, remapped_status, result, coord_offset
+      remapped_chr, remapped_pos, remapped_strand, remapped_status,
+      result, coord_offset,
+      (optionally) the explanatory columns listed above + verdict.
     """
     merged = manifest_df.merge(remapped_df, on="Name", how="left")
 
@@ -265,6 +452,8 @@ def compare_all(manifest_df: pd.DataFrame, remapped_df: pd.DataFrame) -> pd.Data
     merged["remapped_pos"]    = merged["remapped_pos"].fillna(0)
     merged["remapped_strand"] = merged["remapped_strand"].fillna("N/A")
     merged["remapped_status"] = merged["remapped_status"].fillna("unmapped")
+    if "remapped_probe_strand" in merged.columns:
+        merged["remapped_probe_strand"] = merged["remapped_probe_strand"].fillna("N/A")
     if "anchor" in merged.columns:
         merged["anchor"] = merged["anchor"].fillna("N/A")
     if "tie" in merged.columns:
@@ -276,6 +465,8 @@ def compare_all(manifest_df: pd.DataFrame, remapped_df: pd.DataFrame) -> pd.Data
         m = {k: row[k] for k in ("manifest_chr", "manifest_pos", "manifest_strand")}
         r = {k: row[k] for k in ("remapped_chr", "remapped_pos",
                                   "remapped_strand", "remapped_status")}
+        if "remapped_probe_strand" in merged.columns:
+            r["remapped_probe_strand"] = row["remapped_probe_strand"]
         cat = classify_marker(m, r)
         results.append(cat)
         if cat == "coord_off":
@@ -290,7 +481,146 @@ def compare_all(manifest_df: pd.DataFrame, remapped_df: pd.DataFrame) -> pd.Data
     merged["coord_offset"] = offsets
     if "coord_delta" in merged.columns:
         merged["coord_delta"] = merged["coord_delta"].fillna(-1).astype(int)
+
+    # Explanatory-layer signals (only when fasta + manifest context are available)
+    if fasta is not None and "TopGenomicSeq" in merged.columns:
+        _add_explanatory_signals(merged, fasta, flank_len)
+
     return merged
+
+
+def _add_explanatory_signals(merged: pd.DataFrame, fasta, flank_len: int) -> None:
+    """Populate context_forward, context_reverse, allele_ok, deletion_seq_ok,
+    insertion_absent, is_ambiguous_snp, is_probe_only, verdict columns in place.
+
+    Only runs detailed signal computation on non-`correct` rows; passing markers
+    receive empty / default values.
+    """
+    cf_list, cr_list = [], []
+    ao_list, dso_list, ia_list = [], [], []
+    amb_list, po_list = [], []
+    verdicts = []
+
+    has_refalt = "remapped_ref" in merged.columns and "remapped_alt" in merged.columns
+    # Vectorised probe-only mask avoids a per-row label→positional lookup over 80k+ rows.
+    if "anchor" in merged.columns:
+        probe_only_mask = (merged["anchor"] == "probe_only").to_numpy()
+    else:
+        probe_only_mask = [False] * len(merged)
+
+    for pos_i, (idx, row) in enumerate(merged.iterrows()):
+        result = row["result"]
+        is_probe_only = bool(probe_only_mask[pos_i])
+        po_list.append(is_probe_only)
+
+        snp_pair = parse_snp_alleles(row.get("SNP"))
+        is_amb = snp_pair is not None and frozenset(snp_pair) in AMBIGUOUS_PAIRS
+        amb_list.append(is_amb)
+
+        ts_parsed = parse_topseq_alleles(row.get("TopGenomicSeq"))
+
+        # allele_ok for SNPs (when we have remapped_ref/remapped_alt)
+        allele_ok = None
+        if snp_pair is not None and has_refalt:
+            r_ref = row.get("remapped_ref")
+            r_alt = row.get("remapped_alt")
+            if pd.notna(r_ref) and pd.notna(r_alt) and row["remapped_strand"] in ("+", "-"):
+                allele_ok = alleles_match_snp(str(r_ref), str(r_alt),
+                                               row["remapped_strand"], snp_pair)
+        ao_list.append(allele_ok)
+
+        # Default signals (used only for non-correct rows)
+        cf = cr = False
+        dso = ia = None
+
+        if result != "correct" and ts_parsed is not None and row["remapped_strand"] in ("+", "-"):
+            pre, allele_a, allele_b, post = ts_parsed
+            # Determine allele length at the locus.
+            # For SNPs both alleles are length 1. For indels one allele is empty.
+            # Use max(len(a), len(b)) to skip over any deletion sequence when checking the
+            # right-side flank, and 0 when it's an insertion (ref has no allele bases).
+            if allele_a == "" or allele_b == "":
+                # deletion: ref allele is the non-empty one; insertion: ref allele is empty
+                ref_is_deletion = (allele_b == "" and allele_a != "") or (allele_a != "" and len(allele_a) > len(allele_b))
+                allele_len = len(allele_a if allele_a != "" else allele_b) if ref_is_deletion else 0
+            else:
+                allele_len = 1
+
+            try:
+                mapinfo = int(row["remapped_pos"])
+                if mapinfo > 0 and row["remapped_chr"] not in ("0", "", None):
+                    cf, cr = check_flanking_context(
+                        fasta, row["remapped_chr"], mapinfo, pre, post,
+                        allele_len, flank_len=flank_len,
+                    )
+                    # Indel-specific signals
+                    deletion_allele = allele_a if (allele_a and not allele_b) else (allele_b if (allele_b and not allele_a) else None)
+                    if deletion_allele is not None and len(deletion_allele) > 0:
+                        try:
+                            fetched = fasta.fetch(row["remapped_chr"], mapinfo - 1,
+                                                   mapinfo - 1 + len(deletion_allele)).upper()
+                            fwd_ok = (fetched == deletion_allele.upper())
+                            rev_ok = (fetched == strand_normalize(deletion_allele, "-").upper())
+                            dso = (fwd_ok or rev_ok)
+                        except (ValueError, KeyError):
+                            dso = False
+                    insertion_allele = None
+                    if allele_a == "" and allele_b != "":
+                        insertion_allele = allele_b
+                    elif allele_b == "" and allele_a != "":
+                        insertion_allele = allele_a if (allele_a != "" and len(allele_a) < len(allele_b or "")) else None
+                    if insertion_allele is not None and len(insertion_allele) > 0:
+                        try:
+                            fetched = fasta.fetch(row["remapped_chr"], mapinfo - 1,
+                                                   mapinfo - 1 + len(insertion_allele)).upper()
+                            ia = (fetched != insertion_allele.upper())
+                        except (ValueError, KeyError):
+                            ia = None
+            except (ValueError, TypeError):
+                pass
+
+        cf_list.append(cf)
+        cr_list.append(cr)
+        dso_list.append(dso)
+        ia_list.append(ia)
+
+        # Compute verdict (empty string for `correct` rows). Probe strand is the
+        # authoritative strand for the RefStrand comparison.
+        #   "+"/"-"  → use as r_strand_for_verdict
+        #   "N/A"    → topseq_only; exempt (use manifest strand so "disagree" branch is false)
+        #   missing  → fall back to TopSeq strand
+        if result == "correct":
+            verdicts.append("")
+        else:
+            probe_strand = row.get("remapped_probe_strand")
+            if probe_strand in ("+", "-"):
+                r_strand_for_verdict = probe_strand
+            elif probe_strand == "N/A":
+                r_strand_for_verdict = row["manifest_strand"]   # force-equal so strand branches skip
+            else:
+                r_strand_for_verdict = row["remapped_strand"]
+            v_row = {
+                "context_forward": cf,
+                "context_reverse": cr,
+                "manifest_strand": row["manifest_strand"],
+                "remapped_strand": r_strand_for_verdict,
+                "coord_ok": (result not in ("coord_off", "wrong_chr", "unmapped")),
+                "is_ambiguous_snp": is_amb,
+                "is_probe_only": is_probe_only,
+                "is_indel": (ts_parsed is not None and (ts_parsed[1] == "" or ts_parsed[2] == "")),
+                "deletion_seq_ok": dso,
+                "insertion_absent": ia,
+            }
+            verdicts.append(classify_explanatory(v_row))
+
+    merged["context_forward"]  = cf_list
+    merged["context_reverse"]  = cr_list
+    merged["allele_ok"]        = ao_list
+    merged["deletion_seq_ok"]  = dso_list
+    merged["insertion_absent"] = ia_list
+    merged["is_ambiguous_snp"] = amb_list
+    merged["is_probe_only"]    = po_list
+    merged["verdict"]          = verdicts
 
 
 # ── OUTPUT ────────────────────────────────────────────────────────────────────
@@ -298,8 +628,34 @@ def compare_all(manifest_df: pd.DataFrame, remapped_df: pd.DataFrame) -> pd.Data
 _TSV_COLS = [
     "Name",
     "manifest_chr", "manifest_pos", "manifest_strand",
-    "remapped_chr",  "remapped_pos",  "remapped_strand", "remapped_status",
+    "remapped_chr",  "remapped_pos",  "remapped_strand", "remapped_probe_strand",
+    "remapped_status", "anchor", "tie",
     "result", "coord_offset", "coord_delta",
+    # Explanatory layer (present when --reference was supplied)
+    "allele_ok",
+    "context_forward", "context_reverse",
+    "deletion_seq_ok", "insertion_absent",
+    "is_ambiguous_snp", "is_probe_only",
+    "verdict",
+    # QC filtration trace (present when --traced was supplied)
+    "why_filtered",
+]
+
+
+# QC filter stage labels — must match scripts/qc_filter.py:WHY_FILTERED_LABELS.
+# Redefined here so benchmark_compare.py doesn't import from qc_filter.
+QC_STAGE_ORDER = [
+    "stage_1_failed_markers",
+    "stage_2_design_conflict",
+    "stage_3_coordinate_role",
+    "stage_4_tie_label",
+    "stage_5_refalt_conf",
+    "stage_6_mapq_topseq",
+    "stage_7_mapq_probe",
+    "stage_8_coord_delta",
+    "stage_9_indel_excluded",
+    "stage_10_polymorphic",
+    "stage_11_ambiguous_snp",
 ]
 
 CATEGORIES = [
@@ -468,6 +824,170 @@ def format_three_d_accuracy_table(three_d: dict) -> str:
     return "\n".join(lines)
 
 
+# ── QC FILTRATION IMPACT ──────────────────────────────────────────────────────
+
+def load_traced_why_filtered(path: str, assembly: str) -> pd.DataFrame:
+    """Load `Name` and `WhyFiltered_{assembly}` from the traced CSV.
+
+    Returns a DataFrame with columns: Name, why_filtered.
+    Markers that passed all filters have why_filtered == "" (pandas reads empty
+    CSV fields as NaN; we coerce those back to "").
+    """
+    col = f"WhyFiltered_{assembly}"
+    df = pd.read_csv(path, usecols=["Name", col], low_memory=False, dtype=str)
+    df = df.rename(columns={col: "why_filtered"})
+    df["why_filtered"] = df["why_filtered"].fillna("")
+    return df
+
+
+def compute_qc_impact(result_df: pd.DataFrame, stages=QC_STAGE_ORDER) -> dict:
+    """Compute QC-impact metrics. *result_df* must have 'result' and 'why_filtered'.
+
+    Keys returned:
+      passed_n, passed_correct, passed_accuracy_pct
+      confusion       : DataFrame indexed by why_filtered, columns = benchmark categories
+      per_stage       : list of (stage, n_removed, n_non_correct, precision_pct)
+      cumulative      : list of (after_stage_label, n_remaining, n_correct, accuracy_pct)
+      fp_df           : markers with result='correct' but why_filtered != ''  (removed by QC but actually correct)
+      fn_df           : markers with why_filtered == '' but result != 'correct' (kept by QC but non-correct)
+    """
+    passed = result_df[result_df["why_filtered"] == ""]
+    passed_n = len(passed)
+    passed_correct = int((passed["result"] == "correct").sum())
+    passed_acc = 100.0 * passed_correct / passed_n if passed_n else 0.0
+
+    # Confusion matrix — rows: filter-stage label (or "" for passed); cols: benchmark category
+    confusion = pd.crosstab(result_df["why_filtered"], result_df["result"])
+
+    # Per-stage precision — fraction of markers removed by the stage that were non-correct
+    per_stage = []
+    for stage in stages:
+        sub = result_df[result_df["why_filtered"] == stage]
+        n = len(sub)
+        if n == 0:
+            continue
+        nc = int((sub["result"] != "correct").sum())
+        per_stage.append((stage, n, nc, 100.0 * nc / n))
+
+    # Cumulative passing-set accuracy — starting from all benchmarked, remove each stage in order
+    running = result_df.copy()
+    cumulative = [(
+        "(before QC)",
+        len(running),
+        int((running["result"] == "correct").sum()),
+        100.0 * (running["result"] == "correct").sum() / len(running) if len(running) else 0.0,
+    )]
+    for stage in stages:
+        running = running[running["why_filtered"] != stage]
+        n = len(running)
+        c = int((running["result"] == "correct").sum())
+        acc = 100.0 * c / n if n else 0.0
+        cumulative.append((stage, n, c, acc))
+
+    fp_df = result_df[(result_df["why_filtered"] != "") & (result_df["result"] == "correct")]
+    fn_df = result_df[(result_df["why_filtered"] == "") & (result_df["result"] != "correct")]
+
+    return {
+        "passed_n":              passed_n,
+        "passed_correct":        passed_correct,
+        "passed_accuracy_pct":   passed_acc,
+        "confusion":             confusion,
+        "per_stage":             per_stage,
+        "cumulative":            cumulative,
+        "fp_df":                 fp_df,
+        "fn_df":                 fn_df,
+    }
+
+
+def format_qc_impact_section(impact: dict) -> list[str]:
+    """Render `compute_qc_impact` output as a list of report lines."""
+    lines = []
+    W = 68
+
+    def w(s=""):
+        lines.append(s)
+
+    w("QC FILTRATION IMPACT")
+    w(f"  Markers surviving all QC filters: {impact['passed_n']:>8,}")
+    w(f"    of which correct:               {impact['passed_correct']:>8,}  ({impact['passed_accuracy_pct']:5.1f}%)")
+    w()
+
+    # Confusion matrix
+    w("  Confusion matrix  (stage × benchmark result)")
+    conf = impact["confusion"]
+    cats = [c for c in ["correct", "coord_correct_strand_wrong", "coord_off",
+                         "wrong_chr", "unmapped", "ambiguous"] if c in conf.columns]
+    header = f"    {'stage':<28} " + " ".join(f"{c[:10]:>10}" for c in cats) + f" {'total':>8}"
+    w(header)
+    w("    " + "-" * (len(header) - 4))
+    # "" (passed) row first
+    if "" in conf.index:
+        row = conf.loc[""]
+        row_total = int(row.sum())
+        row_str = " ".join(f"{int(row.get(c, 0)):>10,}" for c in cats)
+        w(f"    {'(passed all QC)':<28} {row_str} {row_total:>8,}")
+    # then each stage that has removals
+    for stage in QC_STAGE_ORDER:
+        if stage not in conf.index:
+            continue
+        row = conf.loc[stage]
+        row_total = int(row.sum())
+        row_str = " ".join(f"{int(row.get(c, 0)):>10,}" for c in cats)
+        w(f"    {stage:<28} {row_str} {row_total:>8,}")
+    w()
+
+    # Per-stage precision
+    w("  Per-stage precision  (% of removed that are non-correct)")
+    w(f"    {'stage':<28} {'removed':>10} {'non-correct':>12} {'precision':>10}")
+    w("    " + "-" * 64)
+    for stage, n, nc, pct in impact["per_stage"]:
+        w(f"    {stage:<28} {n:>10,} {nc:>12,} {pct:>9.1f}%")
+    w()
+
+    # Cumulative accuracy
+    w("  Cumulative passing-set accuracy  (stages applied in order)")
+    w(f"    {'after':<28} {'remaining':>10} {'correct':>10} {'accuracy':>10}")
+    w("    " + "-" * 62)
+    for label, n, c, acc in impact["cumulative"]:
+        w(f"    {label:<28} {n:>10,} {c:>10,} {acc:>9.1f}%")
+    w()
+
+    # False positives: correct markers removed by QC
+    fp = impact["fp_df"]
+    w(f"  False positives  (correct markers removed by QC): {len(fp):,}")
+    if len(fp) > 0:
+        fp_by_stage = fp["why_filtered"].value_counts()
+        w("    FP by stage:")
+        for stage, n in fp_by_stage.items():
+            w(f"      {stage:<28} {int(n):>6,}")
+        w()
+        w(f"    First {min(10, len(fp))} FP markers:")
+        w(f"      {'Name':<35} {'stage':<28} {'Chr':>4} {'MapInfo':>12}")
+        for _, row in fp.head(10).iterrows():
+            w(f"      {str(row.get('Name',''))[:35]:<35} "
+              f"{str(row.get('why_filtered',''))[:28]:<28} "
+              f"{str(row.get('manifest_chr','')):>4} "
+              f"{str(row.get('manifest_pos','')):>12}")
+        w()
+
+    # False negatives: non-correct markers surviving QC
+    fn = impact["fn_df"]
+    w(f"  False negatives  (non-correct markers surviving QC): {len(fn):,}")
+    if len(fn) > 0:
+        w("    FN by benchmark result:")
+        for cat, n in fn["result"].value_counts().items():
+            w(f"      {cat:<28} {int(n):>6,}")
+        if "verdict" in fn.columns:
+            w("    FN by explanatory verdict:")
+            vc = fn["verdict"].fillna("").value_counts()
+            for verdict, n in vc.items():
+                label = verdict if verdict else "(no verdict)"
+                w(f"      {label:<28} {int(n):>6,}")
+        w()
+
+    return lines
+
+
 def write_report(
     result_df: pd.DataFrame,
     chry_df: pd.DataFrame,
@@ -556,6 +1076,23 @@ def write_report(
         w(format_three_d_accuracy_table(three_d))
         w()
 
+    # Verdict distribution (explanatory layer; present when --reference was used)
+    if "verdict" in result_df.columns:
+        non_correct = result_df[result_df["result"] != "correct"]
+        if len(non_correct) > 0:
+            w("EXPLANATORY VERDICTS  (non-correct markers only)")
+            counts = non_correct["verdict"].value_counts()
+            for verdict, n in counts.items():
+                w(f"  {str(verdict):<30} {_fmt(int(n), len(non_correct))}")
+            w()
+
+    # QC filtration impact (present when --traced was supplied)
+    if "why_filtered" in result_df.columns:
+        w("-" * 60)
+        impact = compute_qc_impact(result_df)
+        for line in format_qc_impact_section(impact):
+            w(line)
+
     # Diff section
     if baseline_df is not None:
         w("-" * 60)
@@ -605,14 +1142,31 @@ def main():
     print(f"[benchmark] Loading remapped: {args.remapped}")
     remapped_df = load_remapped(args.remapped, args.assembly)
 
-    print("[benchmark] Classifying markers...")
-    result_df = compare_all(main_df, remapped_df)
+    fasta = None
+    if args.reference:
+        import pysam
+        print(f"[benchmark] Opening reference FASTA: {args.reference}")
+        fasta = pysam.FastaFile(args.reference)
 
-    # Classify chrY and chr0 rows for their side TSVs
-    chry_result = compare_all(chry_df, remapped_df)
-    chry_result["result"] = "chrY"
-    chr0_result = compare_all(chr0_df, remapped_df)
-    chr0_result["result"] = "chr0"
+    try:
+        print("[benchmark] Classifying markers...")
+        result_df = compare_all(main_df, remapped_df, fasta=fasta, flank_len=args.flank_len)
+
+        # Classify chrY and chr0 rows for their side TSVs (no explanatory layer — out of scope)
+        chry_result = compare_all(chry_df, remapped_df)
+        chry_result["result"] = "chrY"
+        chr0_result = compare_all(chr0_df, remapped_df)
+        chr0_result["result"] = "chr0"
+    finally:
+        if fasta is not None:
+            fasta.close()
+
+    # Merge QC filter trace if provided (benchmarked set only, per user scope).
+    if args.traced:
+        print(f"[benchmark] Loading QC trace: {args.traced}")
+        trace_df = load_traced_why_filtered(args.traced, args.assembly)
+        result_df = result_df.merge(trace_df, on="Name", how="left")
+        result_df["why_filtered"] = result_df["why_filtered"].fillna("")
 
     # Write TSVs
     main_tsv = os.path.join(args.output_dir, f"benchmark_{ts}.tsv")

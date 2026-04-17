@@ -8,14 +8,15 @@
 #   conda activate remap   (run install.sh first to create this environment)
 #
 # Usage:
-#   bash run_pipeline.sh -i <manifest.csv> -r <reference.fa> [options]
+#   bash run_pipeline.sh -i <manifest.csv> -r <reference.fa> -a <assembly> [options]
 #
 # Required:
 #   -i / --manifest      Path to the Illumina manifest CSV
 #   -r / --reference     Path to the target reference genome FASTA
+#   -a / --assembly      Assembly name for output labels (e.g. equCab3 →
+#                        columns like Chr_equCab3); must be explicitly provided
 #
 # Optional:
-#   -a / --assembly      Assembly name for output labels (default: basename of reference, no extension)
 #   -o / --output-dir    Output directory (default: ./output)
 #   -t / --threads       Threads for minimap2 (default: 4)
 #   --mapq-topseq        Min MAPQ for TopGenomicSeq alignments (default: 30)
@@ -25,7 +26,8 @@
 #   --tie-label          Tie threshold: unique / resolved (default) / avoid_scaffolds
 #   --refalt-conf        RefAlt confidence: High / Moderate (default) / Low
 #   --keep-indels        Include indel markers in outputs (default: excluded)
-#   --keep-polymorphic   Keep polymorphic positions (default: removed)
+#   --keep-polymorphic   Keep polymorphic positions (default: excluded)
+#   --keep-ambiguous     Keep ambiguous (A/T, C/G) SNPs in outputs (default: excluded)
 #   --keep-temp          Keep intermediate FASTA/SAM files
 #   --resume             Skip step 2 if remapped CSV and SAM files already exist
 #   -h / --help          Show this help message
@@ -48,8 +50,8 @@
 #   qc/
 #     matchingSNPs_binary_consistantMapping.{assembly}_map  Final map (main output)
 #     {prefix}_remapped_{assembly}.bim            PLINK BIM format
+#     {prefix}_remapped_{assembly}_traced.csv     Full input with per-marker WhyFiltered column
 #     _matchingSNPs_binary_consistantMapping.vcf  VCF (final filtered set)
-#     allele_usage_decision.txt                   Per-SNP allele orientation decisions
 #     QC_Report.txt                               Marker counts at each filter stage
 #     remap_assessment/                           MAPQ histograms and benchmarks
 # ──────────────────────────────────────────────────────────────────────────────
@@ -72,6 +74,7 @@ TIE_LABEL="resolved"
 REFALT_CONF="Moderate"
 KEEP_INDELS=""
 KEEP_POLYMORPHIC=""
+KEEP_AMBIGUOUS=""
 KEEP_TEMP=""
 RESUME=""
 
@@ -96,6 +99,7 @@ while [[ $# -gt 0 ]]; do
         --refalt-conf)      REFALT_CONF="$2"; shift 2 ;;
         --keep-indels)      KEEP_INDELS="--keep-indels"; shift ;;
         --keep-polymorphic) KEEP_POLYMORPHIC="--keep-polymorphic"; shift ;;
+        --keep-ambiguous)   KEEP_AMBIGUOUS="--keep-ambiguous"; shift ;;
         --keep-temp)        KEEP_TEMP="--keep-temp"; shift ;;
         --resume)           RESUME=1; shift ;;
         -h|--help)          usage ;;
@@ -104,18 +108,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Validation ────────────────────────────────────────────────────────────────
-if [[ -z "$MANIFEST" || -z "$REFERENCE" ]]; then
-    echo "ERROR: -i/--manifest and -r/--reference are required."
+if [[ -z "$MANIFEST" || -z "$REFERENCE" || -z "$ASSEMBLY" ]]; then
+    echo "ERROR: -i/--manifest, -r/--reference, and -a/--assembly are required."
     usage
 fi
 [[ -f "$MANIFEST"  ]] || { echo "ERROR: Manifest not found: $MANIFEST";   exit 1; }
 [[ -f "$REFERENCE" ]] || { echo "ERROR: Reference not found: $REFERENCE"; exit 1; }
-
-# Derive assembly name from reference filename if not provided
-if [[ -z "$ASSEMBLY" ]]; then
-    ASSEMBLY="$(basename "$REFERENCE")"
-    ASSEMBLY="${ASSEMBLY%.fa*}"   # strip .fa / .fasta / .fa.gz
-fi
 
 # Derive prefix from manifest filename
 PREFIX="$(basename "$MANIFEST")"
@@ -195,7 +193,8 @@ python "$SCRIPT_DIR/scripts/qc_filter.py" \
     --temp-dir       "$TEMP_DIR" \
     --prefix         "$PREFIX" \
     $KEEP_INDELS \
-    $KEEP_POLYMORPHIC
+    $KEEP_POLYMORPHIC \
+    $KEEP_AMBIGUOUS
 
 # ── Cleanup temp files ────────────────────────────────────────────────────────
 if [[ -z "$KEEP_TEMP" ]]; then

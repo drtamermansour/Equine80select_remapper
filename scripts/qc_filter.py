@@ -1,24 +1,23 @@
 """
 qc_filter.py — QC filtering, allele decision, VCF/BIM/map generation.
 
-Takes the remapped manifest (output of remap_manifest.py) and applies a cascade of
-quality filters, then generates all downstream output files:
+Consumes the remapped manifest produced by ``remap_manifest.py`` and applies an
+11-stage filter cascade, then writes downstream output files. Per-stage counts
+are recorded in ``QC_Report.txt`` and a per-marker trace CSV annotates each
+input marker with the first filter stage (if any) that rejected it
+(``WhyFiltered_{assembly}`` column). See ``WHY_FILTERED_LABELS`` below for the
+canonical stage order.
 
-  Filter cascade (with marker counts at each stage written to QC_Report.txt):
-    1. Strand=N/A filter   — remove markers where Strand_{assembly} == 'N/A' (unmapped + ambiguous)
-    2. MAPQ filter         — remove markers below MAPQ thresholds
-    3. Design conflict     — keep only markers where remapped Ref matches genome Ref
-    4. Polymorphic sites   — remove positions with conflicting Ref/Alt assignments
-    5. Consistency filter  — remove markers with inconsistent probe/topseq alignments
+Outputs under ``--output-dir``:
 
-  Outputs:
-    _matchingSNPs.vcf
-    _matchingSNPs_binary.vcf
-    _matchingSNPs_binary_consistantMapping.vcf
-    {prefix}_remapped_{assembly}.bim
-    matchingSNPs_binary_consistantMapping.{assembly}_map
-    QC_Report.txt
-    remap_assessment/   (MAPQ histograms, benchmark against known-assembly markers)
+  _matchingSNPs.vcf                                        Post-indel-filter VCF template
+  _matchingSNPs_binary.vcf                                 Final filtered VCF
+  _matchingSNPs_binary_consistantMapping.vcf               Identical to binary (kept for compat)
+  {prefix}_remapped_{assembly}.bim                         PLINK BIM
+  {prefix}_remapped_{assembly}_traced.csv                  Full input + WhyFiltered column
+  matchingSNPs_binary_consistantMapping.{assembly}_map     Final map (main pipeline output)
+  QC_Report.txt                                            Per-stage counts
+  remap_assessment/                                        MAPQ histograms + known-assembly benchmark
 
 Usage:
   python scripts/qc_filter.py \\
@@ -27,10 +26,10 @@ Usage:
       -v vcf_contigs.txt \\
       -a equCab3 \\
       -o output_dir/ \\
-      [--mapq-topseq 30] \\
-      [--mapq-probe 0] \\
-      [--temp-dir /tmp/remap] \\
-      [--prefix Equine80select]
+      [--coordinate-role Moderate] [--tie-label resolved] [--refalt-conf Moderate] \\
+      [--mapq-topseq 30] [--mapq-probe 0] [--coord-delta -1] \\
+      [--keep-indels] [--keep-polymorphic] [--keep-ambiguous] \\
+      [--temp-dir /tmp/remap] [--prefix Equine80select]
 """
 
 import argparse
@@ -43,11 +42,37 @@ from collections import Counter, defaultdict
 import pandas as pd
 import pysam
 
-COMPLEMENT = str.maketrans("ACGTacgt", "TGCAtgca")
+from _strand_utils import strand_normalize, complement
 
 
-def complement(seq):
-    return seq.translate(COMPLEMENT)
+# ── Per-marker filter tracing (WhyFiltered_{assembly} column) ────────────────
+
+WHY_FILTERED_LABELS = [
+    "stage_1_failed_markers",
+    "stage_2_design_conflict",
+    "stage_3_coordinate_role",
+    "stage_4_tie_label",
+    "stage_5_refalt_conf",
+    "stage_6_mapq_topseq",
+    "stage_7_mapq_probe",
+    "stage_8_coord_delta",
+    "stage_9_indel_excluded",
+    "stage_10_polymorphic",
+    "stage_11_ambiguous_snp",
+]
+
+
+def _tag_removed(why: pd.Series, before_idx, after_idx, label: str) -> None:
+    """Mark markers that survived into *before_idx* but not *after_idx* with *label*.
+
+    First-rejection-wins: markers already tagged by an earlier stage keep that tag.
+    Mutates *why* in place; caller owns the series.
+    """
+    removed = pd.Index(before_idx).difference(pd.Index(after_idx))
+    if len(removed) == 0:
+        return
+    untagged = removed[why.loc[removed] == ""]
+    why.loc[untagged] = label
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -108,6 +133,10 @@ def parse_args():
         "--keep-polymorphic", action="store_true", default=False,
         help="Keep markers at polymorphic positions (default: False = removed)."
     )
+    p.add_argument(
+        "--keep-ambiguous", action="store_true", default=False,
+        help="Keep ambiguous (A/T or C/G) SNPs in outputs (default: False = removed)."
+    )
     return p.parse_args()
 
 
@@ -144,13 +173,6 @@ def extract_ref_alleles(pos_vcf, ref_fasta, ref_vcf):
             cols = line.split("\t")
             ref_map[cols[2]] = cols[3].upper()
     return ref_map
-
-
-def strand_normalize(allele, strand):
-    """Returns the allele on the + (forward) strand."""
-    if strand == "-":
-        return allele.translate(COMPLEMENT)[::-1]
-    return allele
 
 
 # ── FINAL MAP FILE ───────────────────────────────────────────────────────────
@@ -383,6 +405,28 @@ def apply_exclude_indels_filter(df):
     return df[(df["_gref"] != "") & (df["_galt"] != "")]
 
 
+# ── EXCLUDE AMBIGUOUS-SNPS FILTER ─────────────────────────────────────────────
+
+_AMBIG_PAIRS = frozenset({frozenset({"A", "T"}), frozenset({"C", "G"})})
+
+
+def apply_exclude_ambiguous_snps_filter(df):
+    """Remove SNPs whose {_gref, _galt} pair is ambiguous after strand-normalisation.
+
+    Ambiguous pairs ({A,T} and {C,G}) equal their own reverse-complement, so
+    the alleles alone cannot resolve which strand the variant lives on —
+    downstream imputation and GWAS typically exclude these.
+
+    Only SNPs trigger: indels have an empty-string allele and never match
+    a two-base ambiguous set.
+    """
+    def _is_ambig(row):
+        return frozenset({str(row["_gref"]), str(row["_galt"])}) in _AMBIG_PAIRS
+    if len(df) == 0:
+        return df
+    return df[~df.apply(_is_ambig, axis=1)]
+
+
 # ── COORDINATE ROLE FILTER ───────────────────────────────────────────────────
 
 def apply_coordinate_role_filter(df, assembly, role):
@@ -533,6 +577,10 @@ def run_qc(args):
     qc_stats["Input markers"] = len(df)
     print(f"[qc] {len(df):,} markers loaded.")
 
+    # Per-marker filter trace (populated at each stage; empty for passing markers)
+    col_why = f"WhyFiltered_{assembly}"
+    why_filtered = pd.Series("", index=df.index, dtype="object")
+
     # ── Benchmark against known-assembly markers ─────────────────────────────
     benchmark_known_assembly(df, assembly, assessment_dir)
 
@@ -544,6 +592,7 @@ def run_qc(args):
 
     # ── Stage 1: Failed markers (Strand=N/A — unmapped + ambiguous) ─────────
     df_mapped = df[df[col_strand].isin(["+", "-"])].copy()
+    _tag_removed(why_filtered, df.index, df_mapped.index, "stage_1_failed_markers")
     qc_stats["Failed markers (unmapped + ambiguous)"] = len(df_mapped)
     print(f"[qc] Stage 1 — Failed markers removed: {len(df) - len(df_mapped):,}; remaining: {len(df_mapped):,}")
 
@@ -578,31 +627,25 @@ def run_qc(args):
         )
 
     # ── Stage 2: Design conflict (remapped Ref must match genome Ref) ────────
-    # For SNPs: _gref (single base, + strand) must equal _genome_ref from bcftools.
-    # For indels with deletion ref (_gref != ''): use RefAltMethodAgreement column
-    #   (NM_mismatch = conflict). Falls back to pysam check if column absent.
-    # For insertions (_gref == ''): no reference sequence to verify; pass through.
-    ref_fasta = pysam.FastaFile(args.reference)
-    try:
-        snp_mask   = (df_mapped["_gref"] != "") & (df_mapped["_galt"] != "")
-        indel_mask = (df_mapped["_gref"] == "") | (df_mapped["_galt"] == "")
+    # SNPs:       _gref (single base, + strand) must equal _genome_ref (from bcftools).
+    # Deletions:  RefAltMethodAgreement_{assembly} != 'NM_mismatch' (already validated in remap_manifest).
+    # Insertions: _gref == '' — no reference sequence to verify; pass through.
+    snp_mask   = (df_mapped["_gref"] != "") & (df_mapped["_galt"] != "")
+    indel_mask = (df_mapped["_gref"] == "") | (df_mapped["_galt"] == "")
 
-        snp_pass = snp_mask & (df_mapped["_gref"] == df_mapped["_genome_ref"])
+    snp_pass = snp_mask & (df_mapped["_gref"] == df_mapped["_genome_ref"])
 
-        col_refalt_agree = f"RefAltMethodAgreement_{assembly}"
-        if col_refalt_agree in df_mapped.columns:
-            indel_pass = indel_mask & (df_mapped[col_refalt_agree] != "NM_mismatch")
-        else:
-            def _indel_passes(row):
-                return check_deletion_ref_match(
-                    ref_fasta, row[col_chr], int(row[col_pos]), row["_gref"]
-                )
-            indel_pass = indel_mask & df_mapped.apply(_indel_passes, axis=1)
+    col_refalt_agree = f"RefAltMethodAgreement_{assembly}"
+    if col_refalt_agree not in df_mapped.columns:
+        raise ValueError(
+            f"Column {col_refalt_agree!r} is required for Stage 2. "
+            f"Input CSV must be produced by the current remap_manifest.py."
+        )
+    indel_pass = indel_mask & (df_mapped[col_refalt_agree] != "NM_mismatch")
 
-        df_noconflict = df_mapped[snp_pass | indel_pass].copy()
-    finally:
-        ref_fasta.close()
+    df_noconflict = df_mapped[snp_pass | indel_pass].copy()
 
+    _tag_removed(why_filtered, df_mapped.index, df_noconflict.index, "stage_2_design_conflict")
     qc_stats["After design conflict filter"] = len(df_noconflict)
     print(f"[qc] Stage 2 — Design conflict removed: {len(df_mapped) - len(df_noconflict):,}; remaining: {len(df_noconflict):,}")
 
@@ -615,6 +658,7 @@ def run_qc(args):
     else:
         print(f"[qc] WARNING: {col_anchor!r} column not found. Skipping coordinate role filter.")
         df_coord_role = df_noconflict
+    _tag_removed(why_filtered, df_noconflict.index, df_coord_role.index, "stage_3_coordinate_role")
     qc_stats[f"After coordinate role ({args.coordinate_role})"] = len(df_coord_role)
 
     # ── Stage 4: Tie label ────────────────────────────────────────────────────
@@ -626,6 +670,7 @@ def run_qc(args):
     else:
         print(f"[qc] WARNING: {col_tie!r} column not found. Skipping tie label filter.")
         df_tie = df_coord_role
+    _tag_removed(why_filtered, df_coord_role.index, df_tie.index, "stage_4_tie_label")
     qc_stats[f"After tie label ({args.tie_label})"] = len(df_tie)
 
     # ── Stage 5: RefAlt confidence ────────────────────────────────────────────
@@ -636,6 +681,7 @@ def run_qc(args):
     else:
         print(f"[qc] WARNING: {col_refalt_agree!r} column not found. Skipping RefAlt confidence filter.")
         df_refalt = df_tie
+    _tag_removed(why_filtered, df_tie.index, df_refalt.index, "stage_5_refalt_conf")
     qc_stats[f"After RefAlt confidence ({args.refalt_conf})"] = len(df_refalt)
 
     # ── Stage 6: MAPQ_TopGenomicSeq (probe_only exempt via NaN) ──────────────
@@ -645,12 +691,14 @@ def run_qc(args):
         df_mapq_ts = df_refalt[~ts_fail].copy()
     else:
         df_mapq_ts = df_refalt
+    _tag_removed(why_filtered, df_refalt.index, df_mapq_ts.index, "stage_6_mapq_topseq")
     n_removed = len(df_refalt) - len(df_mapq_ts)
     print(f"[qc] Stage 6 — MAPQ_TopGenomicSeq (>={args.mapq_topseq}): {n_removed:,} removed; {len(df_mapq_ts):,} remaining")
     qc_stats[f"After MAPQ_TopGenomicSeq (>={args.mapq_topseq})"] = len(df_mapq_ts)
 
     # ── Stage 7: MAPQ_Probe (topseq_only exempt via NaN) ─────────────────────
     df_mapq = apply_probe_mapq_filter(df_mapq_ts, args.mapq_probe).copy()
+    _tag_removed(why_filtered, df_mapq_ts.index, df_mapq.index, "stage_7_mapq_probe")
     n_removed = len(df_mapq_ts) - len(df_mapq)
     print(f"[qc] Stage 7 — MAPQ_Probe (>={args.mapq_probe}): {n_removed:,} removed; {len(df_mapq):,} remaining")
     qc_stats[f"After MAPQ_Probe (>={args.mapq_probe})"] = len(df_mapq)
@@ -672,6 +720,7 @@ def run_qc(args):
         qc_stats[f"After CoordDelta filter (delta<={args.coord_delta})"] = len(df_coord)
     else:
         df_coord = df_mapq
+    _tag_removed(why_filtered, df_mapq.index, df_coord.index, "stage_8_coord_delta")
 
     # ── Stage 9: Indels (excluded by default; --keep-indels to include) ───────
     if not args.keep_indels:
@@ -682,6 +731,7 @@ def run_qc(args):
     else:
         df_noindel = df_coord
         print("[qc] Stage 9 — Indels kept (--keep-indels).")
+    _tag_removed(why_filtered, df_coord.index, df_noindel.index, "stage_9_indel_excluded")
 
     # Write _matchingSNPs.vcf (post-indel-filter, pre-polymorphic)
     match_vcf = os.path.join(out_dir, "_matchingSNPs.vcf")
@@ -730,6 +780,25 @@ def run_qc(args):
     else:
         df_final = df_noindel
         print("[qc] Stage 10 — Polymorphic sites kept (--keep-polymorphic).")
+    _tag_removed(why_filtered, df_noindel.index, df_final.index, "stage_10_polymorphic")
+
+    # ── Stage 11: Ambiguous SNPs (A/T, C/G) — excluded by default ────────────
+    df_before_ambig = df_final
+    if not args.keep_ambiguous:
+        df_final = apply_exclude_ambiguous_snps_filter(df_before_ambig).copy()
+        n_removed = len(df_before_ambig) - len(df_final)
+        print(f"[qc] Stage 11 — Ambiguous SNPs excluded: {n_removed:,} removed; {len(df_final):,} remaining")
+        qc_stats["After ambiguous-SNP filter"] = len(df_final)
+    else:
+        print("[qc] Stage 11 — Ambiguous SNPs kept (--keep-ambiguous).")
+    _tag_removed(why_filtered, df_before_ambig.index, df_final.index, "stage_11_ambiguous_snp")
+
+    # ── Write full-input trace CSV with per-marker WhyFiltered column ────────
+    df_trace = df.copy()
+    df_trace[col_why] = why_filtered
+    trace_path = os.path.join(out_dir, f"{prefix}_remapped_{assembly}_traced.csv")
+    df_trace.to_csv(trace_path, index=False)
+    print(f"[qc] Per-marker trace written: {trace_path}")
 
     # Write _matchingSNPs_binary.vcf
     binary_vcf = os.path.join(out_dir, "_matchingSNPs_binary.vcf")

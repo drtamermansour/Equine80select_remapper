@@ -12,10 +12,13 @@ from qc_filter import (
     check_deletion_ref_match,
     make_anchor_alleles,
     apply_exclude_indels_filter,
+    apply_exclude_ambiguous_snps_filter,
     apply_coordinate_role_filter,   # Task 5
     apply_tie_label_filter,          # Task 5
     apply_refalt_conf_filter,        # Task 5
     format_three_d_table,            # Task 5
+    _tag_removed,
+    WHY_FILTERED_LABELS,
 )
 
 
@@ -67,6 +70,94 @@ def test_probe_mapq_filter_mixed_dataset():
     result = apply_probe_mapq_filter(df, threshold=30)
     # NaN (idx 0), 30 (idx 2), 60 (idx 3) survive; 20 (idx 1) removed
     assert list(result.index) == [0, 2, 3]
+
+
+# ── _tag_removed + WHY_FILTERED_LABELS ────────────────────────────────────────
+
+def test_why_filtered_labels_define_eleven_stages():
+    """WHY_FILTERED_LABELS must list exactly the 11 filter stages in order."""
+    assert WHY_FILTERED_LABELS == [
+        "stage_1_failed_markers",
+        "stage_2_design_conflict",
+        "stage_3_coordinate_role",
+        "stage_4_tie_label",
+        "stage_5_refalt_conf",
+        "stage_6_mapq_topseq",
+        "stage_7_mapq_probe",
+        "stage_8_coord_delta",
+        "stage_9_indel_excluded",
+        "stage_10_polymorphic",
+        "stage_11_ambiguous_snp",
+    ]
+
+
+# ── apply_exclude_ambiguous_snps_filter ───────────────────────────────────────
+
+def test_exclude_ambiguous_removes_at_cg_pairs():
+    """SNPs with {A,T} or {C,G} allele pairs are removed; others kept."""
+    df = pd.DataFrame({
+        "_gref": ["A", "C", "A", "G", "A"],
+        "_galt": ["T", "G", "G", "A", "C"],
+    })
+    out = apply_exclude_ambiguous_snps_filter(df)
+    # idx 0 → {A,T} ambiguous; idx 1 → {C,G} ambiguous; idx 2,3,4 → non-ambiguous
+    assert list(out.index) == [2, 3, 4]
+
+
+def test_exclude_ambiguous_drops_at_in_both_orders():
+    """{A,T} is a set — order inside the row doesn't matter."""
+    df = pd.DataFrame({"_gref": ["A", "T"], "_galt": ["T", "A"]})
+    out = apply_exclude_ambiguous_snps_filter(df)
+    assert len(out) == 0
+
+
+def test_exclude_ambiguous_keeps_indels_even_when_other_allele_is_A_or_T():
+    """Indel rows have an empty allele; {A,''} and {'',T} are not ambiguous pairs."""
+    df = pd.DataFrame({"_gref": ["A", ""], "_galt": ["", "T"]})
+    out = apply_exclude_ambiguous_snps_filter(df)
+    assert len(out) == 2
+
+
+def test_exclude_ambiguous_empty_df():
+    """Empty input → empty output, no errors."""
+    df = pd.DataFrame({"_gref": [], "_galt": []})
+    out = apply_exclude_ambiguous_snps_filter(df)
+    assert len(out) == 0
+
+
+def test_tag_removed_tags_markers_dropped_by_stage():
+    """Markers in before-idx but not in after-idx receive the stage label."""
+    why = pd.Series(["", "", "", ""], index=[0, 1, 2, 3])
+    _tag_removed(why, before_idx=[0, 1, 2, 3], after_idx=[0, 2], label="stage_3_coordinate_role")
+    assert why.tolist() == ["", "stage_3_coordinate_role", "", "stage_3_coordinate_role"]
+
+
+def test_tag_removed_preserves_first_rejection_label():
+    """A marker already labelled by an earlier stage keeps that label (first-rejection-wins)."""
+    why = pd.Series(["stage_1_failed_markers", "", "", ""], index=[0, 1, 2, 3])
+    _tag_removed(why, before_idx=[0, 1, 2, 3], after_idx=[2], label="stage_3_coordinate_role")
+    assert why.tolist() == [
+        "stage_1_failed_markers",   # kept (set earlier)
+        "stage_3_coordinate_role",  # newly tagged
+        "",                         # passed
+        "stage_3_coordinate_role",  # newly tagged
+    ]
+
+
+def test_tag_removed_noop_when_nothing_removed():
+    """If after-idx == before-idx, no labels are added."""
+    why = pd.Series(["", "", ""], index=[0, 1, 2])
+    _tag_removed(why, before_idx=[0, 1, 2], after_idx=[0, 1, 2], label="stage_5_refalt_conf")
+    assert why.tolist() == ["", "", ""]
+
+
+def test_tag_removed_works_with_non_sequential_indices():
+    """Must use index identity, not positional order — robust to filtered DataFrame indices."""
+    why = pd.Series(["", "", ""], index=[10, 42, 99])
+    _tag_removed(why, before_idx=[10, 42, 99], after_idx=[42], label="stage_7_mapq_probe")
+    assert why[10]  == "stage_7_mapq_probe"
+    assert why[42]  == ""
+    assert why[99]  == "stage_7_mapq_probe"
 
 
 def test_probe_mapq_filter_zero_mapq_removed_when_threshold_active():
