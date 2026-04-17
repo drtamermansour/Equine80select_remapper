@@ -410,6 +410,25 @@ def apply_exclude_indels_filter(df):
 _AMBIG_PAIRS = frozenset({frozenset({"A", "T"}), frozenset({"C", "G"})})
 
 
+def polymorphic_positions(df, col_chr, col_pos):
+    """Return the set of (chr, pos) tuples where multiple markers emit conflicting
+    Ref/Alt assignments at the same coordinate.
+
+    Used by Stage 10 both to remove polymorphic markers and (when `--keep-polymorphic`
+    is set) to compute the hypothetical count of markers that *would* have been
+    removed if the filter had been applied.
+    """
+    if len(df) == 0:
+        return set()
+    counts = (
+        df.assign(_allele_pair=df["_gref"] + "," + df["_galt"])
+          .groupby([col_chr, col_pos])["_allele_pair"]
+          .nunique()
+    )
+    polymorphic = counts[counts > 1].reset_index()
+    return set(zip(polymorphic[col_chr], polymorphic[col_pos]))
+
+
 def apply_exclude_ambiguous_snps_filter(df):
     """Remove SNPs whose {_gref, _galt} pair is ambiguous after strand-normalisation.
 
@@ -689,19 +708,26 @@ def run_qc(args):
     if args.mapq_topseq > 0:
         ts_fail = ts_mapq.notna() & (ts_mapq < args.mapq_topseq)
         df_mapq_ts = df_refalt[~ts_fail].copy()
+        _tag_removed(why_filtered, df_refalt.index, df_mapq_ts.index, "stage_6_mapq_topseq")
+        n_removed = len(df_refalt) - len(df_mapq_ts)
+        print(f"[qc] Stage 6 — MAPQ_TopGenomicSeq (>={args.mapq_topseq}): {n_removed:,} removed; {len(df_mapq_ts):,} remaining")
+        qc_stats[f"After MAPQ_TopGenomicSeq (>={args.mapq_topseq})"] = len(df_mapq_ts)
     else:
         df_mapq_ts = df_refalt
-    _tag_removed(why_filtered, df_refalt.index, df_mapq_ts.index, "stage_6_mapq_topseq")
-    n_removed = len(df_refalt) - len(df_mapq_ts)
-    print(f"[qc] Stage 6 — MAPQ_TopGenomicSeq (>={args.mapq_topseq}): {n_removed:,} removed; {len(df_mapq_ts):,} remaining")
-    qc_stats[f"After MAPQ_TopGenomicSeq (>={args.mapq_topseq})"] = len(df_mapq_ts)
+        print("[qc] Stage 6 — MAPQ_TopGenomicSeq skipped (--mapq-topseq 0).")
+        qc_stats["Stage 6 skipped — MAPQ_TopGenomicSeq (--mapq-topseq 0)"] = len(df_mapq_ts)
 
     # ── Stage 7: MAPQ_Probe (topseq_only exempt via NaN) ─────────────────────
-    df_mapq = apply_probe_mapq_filter(df_mapq_ts, args.mapq_probe).copy()
-    _tag_removed(why_filtered, df_mapq_ts.index, df_mapq.index, "stage_7_mapq_probe")
-    n_removed = len(df_mapq_ts) - len(df_mapq)
-    print(f"[qc] Stage 7 — MAPQ_Probe (>={args.mapq_probe}): {n_removed:,} removed; {len(df_mapq):,} remaining")
-    qc_stats[f"After MAPQ_Probe (>={args.mapq_probe})"] = len(df_mapq)
+    if args.mapq_probe > 0:
+        df_mapq = apply_probe_mapq_filter(df_mapq_ts, args.mapq_probe).copy()
+        _tag_removed(why_filtered, df_mapq_ts.index, df_mapq.index, "stage_7_mapq_probe")
+        n_removed = len(df_mapq_ts) - len(df_mapq)
+        print(f"[qc] Stage 7 — MAPQ_Probe (>={args.mapq_probe}): {n_removed:,} removed; {len(df_mapq):,} remaining")
+        qc_stats[f"After MAPQ_Probe (>={args.mapq_probe})"] = len(df_mapq)
+    else:
+        df_mapq = df_mapq_ts
+        print(f"[qc] Stage 7 — MAPQ_Probe skipped (--mapq-probe {args.mapq_probe}).")
+        qc_stats[f"Stage 7 skipped — MAPQ_Probe (--mapq-probe {args.mapq_probe})"] = len(df_mapq)
 
     # ── Stage 8: CoordDelta ───────────────────────────────────────────────────
     # topseq_only and probe_only have CoordDelta=-1 (no CIGAR coord) and pass through.
@@ -720,6 +746,8 @@ def run_qc(args):
         qc_stats[f"After CoordDelta filter (delta<={args.coord_delta})"] = len(df_coord)
     else:
         df_coord = df_mapq
+        print(f"[qc] Stage 8 — CoordDelta skipped (--coord-delta {args.coord_delta}).")
+        qc_stats[f"Stage 8 skipped — CoordDelta (--coord-delta {args.coord_delta})"] = len(df_coord)
     _tag_removed(why_filtered, df_mapq.index, df_coord.index, "stage_8_coord_delta")
 
     # ── Stage 9: Indels (excluded by default; --keep-indels to include) ───────
@@ -730,7 +758,9 @@ def run_qc(args):
         qc_stats["After indel filter"] = len(df_noindel)
     else:
         df_noindel = df_coord
-        print("[qc] Stage 9 — Indels kept (--keep-indels).")
+        hypothetical = len(df_coord) - len(apply_exclude_indels_filter(df_coord))
+        print(f"[qc] Stage 9 — Indels kept (--keep-indels); {hypothetical:,} would have been removed.")
+        qc_stats[f"Stage 9 skipped — Indels (--keep-indels; would remove {hypothetical:,})"] = len(df_noindel)
     _tag_removed(why_filtered, df_coord.index, df_noindel.index, "stage_9_indel_excluded")
 
     # Write _matchingSNPs.vcf (post-indel-filter, pre-polymorphic)
@@ -758,19 +788,11 @@ def run_qc(args):
 
     # ── Stage 10: Polymorphic (removed by default; --keep-polymorphic to skip) ─
     if not args.keep_polymorphic:
-        pos_allele_counts = (
-            df_noindel.assign(_allele_pair=df_noindel["_gref"] + "," + df_noindel["_galt"])
-            .groupby([col_chr, col_pos])["_allele_pair"]
-            .nunique()
-        )
-        polymorphic = pos_allele_counts[pos_allele_counts > 1].reset_index()
-        poly_set = set(zip(polymorphic[col_chr], polymorphic[col_pos]))
-
+        poly_set = polymorphic_positions(df_noindel, col_chr, col_pos)
         poly_path = os.path.join(out_dir, "polymorphic_positions.txt")
         with open(poly_path, "w") as f:
             for chr_, pos in poly_set:
                 f.write(f"{chr_},{pos}\n")
-
         df_final = df_noindel[~df_noindel.apply(
             lambda r: (r[col_chr], r[col_pos]) in poly_set, axis=1
         )].copy()
@@ -779,7 +801,12 @@ def run_qc(args):
         qc_stats["After polymorphic filter"] = len(df_final)
     else:
         df_final = df_noindel
-        print("[qc] Stage 10 — Polymorphic sites kept (--keep-polymorphic).")
+        poly_set = polymorphic_positions(df_noindel, col_chr, col_pos)
+        hypothetical = df_noindel.apply(
+            lambda r: (r[col_chr], r[col_pos]) in poly_set, axis=1
+        ).sum()
+        print(f"[qc] Stage 10 — Polymorphic sites kept (--keep-polymorphic); {hypothetical:,} would have been removed.")
+        qc_stats[f"Stage 10 skipped — Polymorphic (--keep-polymorphic; would remove {hypothetical:,})"] = len(df_final)
     _tag_removed(why_filtered, df_noindel.index, df_final.index, "stage_10_polymorphic")
 
     # ── Stage 11: Ambiguous SNPs (A/T, C/G) — excluded by default ────────────
@@ -790,7 +817,9 @@ def run_qc(args):
         print(f"[qc] Stage 11 — Ambiguous SNPs excluded: {n_removed:,} removed; {len(df_final):,} remaining")
         qc_stats["After ambiguous-SNP filter"] = len(df_final)
     else:
-        print("[qc] Stage 11 — Ambiguous SNPs kept (--keep-ambiguous).")
+        hypothetical = len(df_before_ambig) - len(apply_exclude_ambiguous_snps_filter(df_before_ambig))
+        print(f"[qc] Stage 11 — Ambiguous SNPs kept (--keep-ambiguous); {hypothetical:,} would have been removed.")
+        qc_stats[f"Stage 11 skipped — Ambiguous SNPs (--keep-ambiguous; would remove {hypothetical:,})"] = len(df_final)
     _tag_removed(why_filtered, df_before_ambig.index, df_final.index, "stage_11_ambiguous_snp")
 
     # ── Write full-input trace CSV with per-marker WhyFiltered column ────────
@@ -873,7 +902,7 @@ def run_qc(args):
                 removed_str = f"  (-{prev - count:,})" if removed != "" else ""
             else:
                 removed_str = ""
-            f.write(f"{stage:<40} {count:>8,}{removed_str}\n")
+            f.write(f"{stage:<75} {count:>8,}{removed_str}\n")
             if isinstance(count, int):
                 prev = count
 
