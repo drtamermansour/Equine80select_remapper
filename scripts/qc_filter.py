@@ -871,13 +871,6 @@ def run_qc(args):
     bim.to_csv(bim_path, sep="\t", header=False, index=False)
     print(f"[qc] BIM written: {bim_path}")
 
-    # ── Ambiguous SNP count ──────────────────────────────────────────────────
-    ambig_pairs = {frozenset(["A","T"]), frozenset(["C","G"])}
-    ambiguous = bim[bim.apply(
-        lambda r: frozenset([str(r["_gref"]), str(r["_galt"])]) in ambig_pairs, axis=1
-    )]
-    qc_stats["Ambiguous SNPs (A/T or C/G)"] = len(ambiguous)
-
     # ── Final map file ───────────────────────────────────────────────────────
     map_path = os.path.join(out_dir, f"matchingSNPs_binary_consistantMapping.{assembly}_map")
     print("[qc] Building final map file...")
@@ -887,9 +880,12 @@ def run_qc(args):
     else:
         print(f"[qc] Final map file written with 0 errors: {map_path}")
 
-    qc_stats["Final markers"] = len(df_final)
-
     # ── QC Report ────────────────────────────────────────────────────────────
+    # Stage 11 already surfaces the ambiguous-SNP count (either as "removed" in
+    # the applied branch or as "would remove N" in the skipped branch), so a
+    # separate "Ambiguous SNPs (A/T or C/G)" diagnostic line would only
+    # duplicate it. Final markers is printed as a standalone row with no diff
+    # (a diff against the previous stage-row count would be meaningless).
     report_path = os.path.join(out_dir, "QC_Report.txt")
     with open(report_path, "w") as f:
         f.write(f"QC Report — assembly: {assembly}\n")
@@ -905,6 +901,7 @@ def run_qc(args):
             f.write(f"{stage:<75} {count:>8,}{removed_str}\n")
             if isinstance(count, int):
                 prev = count
+        f.write(f"{'Final markers':<75} {len(df_final):>8,}\n")
 
     # ── 3D summary appended to QC_Report.txt ─────────────────────────────────
     _req = [f"anchor_{assembly}", f"tie_{assembly}", f"RefAltMethodAgreement_{assembly}"]
