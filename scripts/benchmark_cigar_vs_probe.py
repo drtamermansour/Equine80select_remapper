@@ -3,9 +3,10 @@
 benchmark_cigar_vs_probe.py — Compare accuracy of three coordinate sources
 against ground-truth manifest:
 
-  1. CoordProbe_{assembly}        — raw probe-derived coordinate (before any override)
-  2. Coord_TopSeqCIGAR_{assembly} — CIGAR-derived coordinate from TopGenomicSeq
-  3. MapInfo_{assembly}           — final chosen coordinate (probe if delta<2, CIGAR otherwise)
+  1. CoordProbe_{assembly}        — probe-CIGAR coordinate (from probe alignment)
+  2. Coord_TopSeqCIGAR_{assembly} — TopSeq-CIGAR coordinate (from TopGenomicSeq alignment)
+  3. MapInfo_{assembly}           — final chosen coordinate
+       (probe_cigar if CoordDelta < 2, topseq_cigar if CoordDelta ≥ 2)
 
 Usage:
     python scripts/benchmark_cigar_vs_probe.py \\
@@ -15,8 +16,11 @@ Usage:
 """
 
 import argparse
-import sys
+import contextlib
+import io
 import os
+import sys
+import time
 
 import pandas as pd
 
@@ -39,6 +43,9 @@ def parse_args():
                    help="Assembly label (e.g. equCab3). Optional — auto-detected "
                         "from the remapped CSV header if omitted. Pass explicitly "
                         "only when the CSV contains multiple assemblies.")
+    p.add_argument("--output-dir", default="./benchmark_out",
+                   help="Output directory for the report file "
+                        "(default: ./benchmark_out)")
     return p.parse_args()
 
 
@@ -243,30 +250,72 @@ def main():
 
     total = len(main_df)
 
-    print(f"\n{'='*96}")
-    print(f"THREE-WAY COMPARISON  (N={total:,} benchmarked markers)")
-    print(f"{'='*96}\n")
-    print_comparison(
-        [(probe_result, "probe (CoordProbe)"),
-         (cigar_result, "CIGAR (TopSeqCIGAR)"),
-         (final_result, "final (MapInfo)")],
-        total,
-    )
+    # Buffer the report sections so we can both write them to a file and
+    # replay them to stdout (parity with benchmark_compare.py).
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        print(f"\n{'='*96}")
+        print(f"THREE-WAY COMPARISON  (N={total:,} benchmarked markers)")
+        print(f"{'='*96}\n")
+        print_comparison(
+            [(probe_result, "probe (CoordProbe)"),
+             (cigar_result, "CIGAR (TopSeqCIGAR)"),
+             (final_result, "final (MapInfo)")],
+            total,
+        )
 
-    print(f"{'='*96}")
-    print("ACCURACY BY COORD_DELTA BUCKET  (correct count only)")
-    print(f"  CoordDelta = |probe_coord - CIGAR_coord|; -1 = no probe (topseq_only or soft-clip)")
-    print(f"{'='*96}\n")
-    print_delta_stratification(probe_result, cigar_result, final_result, remapped_df, main_df)
+        print(f"{'='*96}")
+        print("ACCURACY BY COORD_DELTA BUCKET  (correct count only)")
+        print("  CoordDelta = |probe_cigar_coord − topseq_cigar_coord|; "
+              "−1 = delta unavailable (topseq_only has no probe; probe_only has no TopSeq)")
+        print(f"{'='*96}\n")
+        print_delta_stratification(probe_result, cigar_result, final_result, remapped_df, main_df)
 
-    # Summary of CoordSource distribution
-    print(f"{'='*96}")
-    print("COORD SOURCE DISTRIBUTION  (how many markers used each source)")
-    print(f"{'='*96}\n")
-    merged = main_df.merge(remapped_df, on="Name", how="left")
-    for src, count in merged["coord_source"].value_counts().items():
-        print(f"  {src:<12}  {count:>8,}  ({100*count/total:.1f}%)")
-    print()
+        # Summary of CoordSource distribution
+        print(f"{'='*96}")
+        print("COORD SOURCE DISTRIBUTION  (how many markers used each source)")
+        print(f"{'='*96}\n")
+        merged = main_df.merge(remapped_df, on="Name", how="left")
+        for src, count in merged["coord_source"].value_counts().items():
+            print(f"  {src:<12}  {count:>8,}  ({100*count/total:.1f}%)")
+        print()
+
+        # Strategy comparison: accuracy under three coord-selection strategies
+        print(f"{'='*96}")
+        print("STRATEGY COMPARISON  (overall accuracy under each coord-selection strategy)")
+        print(f"{'='*96}\n")
+        strategies = [
+            ("probe-only",       "always use CoordProbe",                          probe_result),
+            ("topseq-only",      "always use Coord_TopSeqCIGAR",                   cigar_result),
+            ("hybrid (current)", "probe_cigar if CoordDelta<2 else topseq_cigar",  final_result),
+        ]
+        for label, desc, df in strategies:
+            n_correct = (df["result"] == "correct").sum()
+            print(f"  {label:<18}  {desc:<48}  {_fmt(n_correct, total):>22}")
+        print()
+
+        probe_correct = (probe_result["result"] == "correct").sum()
+        cigar_correct = (cigar_result["result"] == "correct").sum()
+        final_correct = (final_result["result"] == "correct").sum()
+        best_single   = max(probe_correct, cigar_correct)
+        best_name     = "topseq-only" if cigar_correct >= probe_correct else "probe-only"
+        gain          = final_correct - best_single
+        gain_pp       = 100.0 * gain / total
+        print(f"  Gain from hybrid over best single strategy ({best_name}): "
+              f"{gain:+,} markers ({gain_pp:+.2f} pp)")
+        print()
+
+    # Write the report file
+    os.makedirs(args.output_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    report_path = os.path.join(args.output_dir,
+                               f"benchmark_cigar_vs_probe_{ts}_report.txt")
+    with open(report_path, "w") as f:
+        f.write(buf.getvalue())
+
+    # Replay buffered content to the real stdout
+    sys.stdout.write(buf.getvalue())
+    print(f"[cigar_vs_probe] Report written to: {report_path}")
 
 
 if __name__ == "__main__":

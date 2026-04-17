@@ -116,6 +116,7 @@ TopSeq-CIGAR coordinate vs the final chosen coordinate.
 | `--manifest` | yes | Ground-truth manifest CSV |
 | `--remapped` | yes | Remapped CSV |
 | `--assembly` | no | Assembly label. Auto-detected from the remapped CSV header when omitted (same rules as `benchmark_compare.py`). |
+| `--output-dir` | `./benchmark_out` | Where to write the timestamped `benchmark_cigar_vs_probe_{ts}_report.txt` |
 
 ---
 
