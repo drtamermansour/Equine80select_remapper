@@ -27,6 +27,7 @@ from benchmark_compare import (
     classify_marker,
     CATEGORIES,
     _fmt,
+    detect_assembly,
 )
 
 
@@ -34,7 +35,10 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--manifest",  required=True)
     p.add_argument("--remapped",  required=True)
-    p.add_argument("--assembly",  required=True)
+    p.add_argument("--assembly",  default=None,
+                   help="Assembly label (e.g. equCab3). Optional — auto-detected "
+                        "from the remapped CSV header if omitted. Pass explicitly "
+                        "only when the CSV contains multiple assemblies.")
     return p.parse_args()
 
 
@@ -55,6 +59,7 @@ def load_remapped_three_coords(path: str, assembly: str) -> pd.DataFrame:
     col_pos_probe   = f"CoordProbe_{assembly}"
     col_pos_cigar   = f"Coord_TopSeqCIGAR_{assembly}"
     col_strand      = f"Strand_{assembly}"
+    col_probe_strand = f"ProbeStrand_{assembly}"
     col_anchor      = f"anchor_{assembly}"
     col_tie         = f"tie_{assembly}"
     col_delta       = f"CoordDelta_{assembly}"
@@ -63,7 +68,8 @@ def load_remapped_three_coords(path: str, assembly: str) -> pd.DataFrame:
     header = pd.read_csv(path, nrows=0)
 
     required_common = [col_chr, col_pos_final, col_pos_probe, col_pos_cigar,
-                       col_strand, col_delta, col_source, col_anchor, col_tie]
+                       col_strand, col_probe_strand, col_delta, col_source,
+                       col_anchor, col_tie]
     for col in required_common:
         if col not in header.columns:
             raise ValueError(
@@ -76,7 +82,8 @@ def load_remapped_three_coords(path: str, assembly: str) -> pd.DataFrame:
         path,
         dtype={col_chr: str},
         usecols=["Name", col_chr, col_pos_final, col_pos_probe, col_pos_cigar,
-                 col_strand, col_delta, col_source, col_anchor, col_tie],
+                 col_strand, col_probe_strand, col_delta, col_source,
+                 col_anchor, col_tie],
         low_memory=False,
     )
 
@@ -98,25 +105,34 @@ def load_remapped_three_coords(path: str, assembly: str) -> pd.DataFrame:
     df = df.drop(columns=[col_anchor, col_tie])
 
     df = df.rename(columns={
-        col_chr:       "chr",
-        col_pos_final: "pos_final",
-        col_pos_probe: "pos_probe",
-        col_pos_cigar: "pos_cigar",
-        col_strand:    "strand",
-        col_delta:     "coord_delta",
-        col_source:    "coord_source",
+        col_chr:          "chr",
+        col_pos_final:    "pos_final",
+        col_pos_probe:    "pos_probe",
+        col_pos_cigar:    "pos_cigar",
+        col_strand:       "strand",
+        col_probe_strand: "probe_strand",
+        col_delta:        "coord_delta",
+        col_source:       "coord_source",
     })
     df["chr"] = df["chr"].apply(normalise_chr)
     return df
 
 
 def classify_with_pos(manifest_df, remapped_df, pos_col):
-    """Classify markers using pos_col as the position."""
+    """Classify markers using pos_col as the position.
+
+    Threads `remapped_probe_strand` through to `classify_marker` so that the
+    strand comparison uses probe alignment strand (which matches RefStrand ~97%)
+    instead of TopSeq alignment strand (uncorrelated with RefStrand). Without
+    this, `coord_correct_strand_wrong` would be reported on ~half of markers
+    purely as a measurement artefact of comparing the wrong strand column.
+    """
     merged = manifest_df.merge(remapped_df, on="Name", how="left")
-    merged["chr"]     = merged["chr"].fillna("0")
-    merged["strand"]  = merged["strand"].fillna("N/A")
-    merged["status"]  = merged["status"].fillna("unmapped")
-    merged[pos_col]   = merged[pos_col].fillna(0)
+    merged["chr"]          = merged["chr"].fillna("0")
+    merged["strand"]       = merged["strand"].fillna("N/A")
+    merged["probe_strand"] = merged["probe_strand"].fillna("N/A")
+    merged["status"]       = merged["status"].fillna("unmapped")
+    merged[pos_col]        = merged[pos_col].fillna(0)
 
     results = []
     for _, row in merged.iterrows():
@@ -126,10 +142,11 @@ def classify_with_pos(manifest_df, remapped_df, pos_col):
             "manifest_strand": row["manifest_strand"],
         }
         r = {
-            "remapped_chr":    row["chr"],
-            "remapped_pos":    row[pos_col],
-            "remapped_strand": row["strand"],
-            "remapped_status": row["status"],
+            "remapped_chr":          row["chr"],
+            "remapped_pos":          row[pos_col],
+            "remapped_strand":       row["strand"],
+            "remapped_probe_strand": row["probe_strand"],
+            "remapped_status":       row["status"],
         }
         # Treat pos=0 as unmapped for probe/CIGAR coords that are unavailable
         if row[pos_col] == 0:
@@ -208,8 +225,12 @@ def main():
     main_df, chry_df, chr0_df = load_manifest(args.manifest)
     print(f"[benchmark]   Benchmarked={len(main_df):,}  Chr=Y={len(chry_df):,}  Chr=0={len(chr0_df):,}")
 
+    assembly = detect_assembly(args.remapped, args.assembly)
+    if args.assembly is None:
+        print(f"[benchmark] Auto-detected assembly: {assembly}")
+
     print(f"[benchmark] Loading remapped: {args.remapped}")
-    remapped_df = load_remapped_three_coords(args.remapped, args.assembly)
+    remapped_df = load_remapped_three_coords(args.remapped, assembly)
 
     print("[benchmark] Classifying with probe coord (CoordProbe)...")
     probe_result = classify_with_pos(main_df, remapped_df, "pos_probe")

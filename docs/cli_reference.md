@@ -97,7 +97,7 @@ how to interpret results.
 |---|---|---|
 | `--manifest` | yes | Ground-truth manifest CSV |
 | `--remapped` | yes | The pipeline's remapped CSV |
-| `--assembly` | yes | Assembly label (e.g. `equCab3`) |
+| `--assembly` | no | Assembly label (e.g. `equCab3`). **Auto-detected** from the remapped CSV header when omitted. Pass explicitly only if the CSV contains multiple assemblies (the script will error out with a clear "ambiguous" message in that case). |
 | `--reference` | no | Reference FASTA — enables the explanatory verdict layer (manifest_strand_wrong / pipeline_wrong_locus / etc.) |
 | `--traced` | no | Path to `{prefix}_remapped_{assembly}_traced.csv` from `qc_filter.py` — enables the **QC filtration impact** report section |
 | `--output-dir` | `./benchmark_out` | Where to write the per-marker TSV and report |
@@ -115,7 +115,7 @@ TopSeq-CIGAR coordinate vs the final chosen coordinate.
 |---|---|---|
 | `--manifest` | yes | Ground-truth manifest CSV |
 | `--remapped` | yes | Remapped CSV |
-| `--assembly` | yes | Assembly label |
+| `--assembly` | no | Assembly label. Auto-detected from the remapped CSV header when omitted (same rules as `benchmark_compare.py`). |
 
 ---
 

@@ -28,7 +28,10 @@ def parse_args():
     p = argparse.ArgumentParser(description="Benchmark remap_manifest.py output against ground-truth manifest.")
     p.add_argument("--manifest",    required=True, help="Illumina manifest CSV (EquCab3-native, GenomeBuild=3)")
     p.add_argument("--remapped",    required=True, help="*_remapped_{assembly}.csv from remap_manifest.py")
-    p.add_argument("--assembly",    required=True, help="Assembly label (e.g. equCab3)")
+    p.add_argument("--assembly",    default=None,
+                   help="Assembly label (e.g. equCab3). Optional — auto-detected from "
+                        "the remapped CSV header if omitted. Pass explicitly only when "
+                        "the CSV contains multiple assemblies.")
     p.add_argument("--reference",   default=None,
                    help="Reference genome FASTA (enables the explanatory layer with context-based verdicts)")
     p.add_argument("--output-dir",  default="./benchmark_out", help="Output directory (default: ./benchmark_out)")
@@ -39,6 +42,41 @@ def parse_args():
                    help="Path to {prefix}_remapped_{assembly}_traced.csv from qc_filter.py; "
                         "enables the QC filtration impact section")
     return p.parse_args()
+
+
+# ── ASSEMBLY AUTO-DETECTION ───────────────────────────────────────────────────
+
+_ANCHOR_SUFFIX_RE = re.compile(r"^anchor_(.+)$")
+
+
+def detect_assembly(remapped_path: str, explicit=None) -> str:
+    """Return the assembly label embedded in the remapped CSV's column names.
+
+    If *explicit* is truthy, returns it unchanged (user override).
+    Otherwise scans the CSV header for `anchor_<X>` columns and:
+      - exactly one match → returns X
+      - zero matches     → raises ValueError (not a current-schema CSV)
+      - multiple matches → raises ValueError (ambiguous; ask user to pass --assembly)
+    """
+    if explicit:
+        return explicit
+    header = pd.read_csv(remapped_path, nrows=0)
+    suffixes = set()
+    for col in header.columns:
+        m = _ANCHOR_SUFFIX_RE.match(col)
+        if m:
+            suffixes.add(m.group(1))
+    if len(suffixes) == 1:
+        return suffixes.pop()
+    if not suffixes:
+        raise ValueError(
+            f"Remapped CSV {remapped_path!r} has no anchor_<assembly> column. "
+            "Re-run remap_manifest.py to produce the current-schema output."
+        )
+    raise ValueError(
+        f"Remapped CSV {remapped_path!r} contains multiple assemblies: "
+        f"{sorted(suffixes)!r}. Ambiguous; pass --assembly explicitly."
+    )
 
 
 # ── CHROMOSOME NORMALISATION ──────────────────────────────────────────────────
@@ -1127,8 +1165,12 @@ def main():
     main_df, chry_df, chr0_df = load_manifest(args.manifest)
     print(f"[benchmark]   Benchmarked={len(main_df):,}  Chr=Y={len(chry_df):,}  Chr=0={len(chr0_df):,}")
 
+    assembly = detect_assembly(args.remapped, args.assembly)
+    if args.assembly is None:
+        print(f"[benchmark] Auto-detected assembly: {assembly}")
+
     print(f"[benchmark] Loading remapped: {args.remapped}")
-    remapped_df = load_remapped(args.remapped, args.assembly)
+    remapped_df = load_remapped(args.remapped, assembly)
 
     fasta = None
     if args.reference:
@@ -1152,7 +1194,7 @@ def main():
     # Merge QC filter trace if provided (benchmarked set only, per user scope).
     if args.traced:
         print(f"[benchmark] Loading QC trace: {args.traced}")
-        trace_df = load_traced_why_filtered(args.traced, args.assembly)
+        trace_df = load_traced_why_filtered(args.traced, assembly)
         result_df = result_df.merge(trace_df, on="Name", how="left")
         result_df["why_filtered"] = result_df["why_filtered"].fillna("")
 
@@ -1176,7 +1218,7 @@ def main():
     write_report(
         result_df, chry_result, chr0_result,
         report_path,
-        assembly=args.assembly,
+        assembly=assembly,
         manifest_path=args.manifest,
         remapped_path=args.remapped,
         baseline_df=baseline_df,
