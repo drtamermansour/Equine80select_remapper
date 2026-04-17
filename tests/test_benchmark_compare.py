@@ -64,11 +64,11 @@ def test_classify_unmapped_chr0():
 def test_classify_unmapped_strand_na():
     assert classify_marker(_mrow(), _rrow(strand="N/A")) == "unmapped"
 
-def test_classify_ambiguous():
-    assert classify_marker(_mrow(), _rrow(status="ambiguous")) == "ambiguous"
+def test_classify_locus_unresolved():
+    assert classify_marker(_mrow(), _rrow(status="locus_unresolved")) == "locus_unresolved"
 
-def test_classify_unmapped_takes_priority_over_ambiguous():
-    assert classify_marker(_mrow(), _rrow(chr="0", status="ambiguous")) == "unmapped"
+def test_classify_unmapped_takes_priority_over_locus_unresolved():
+    assert classify_marker(_mrow(), _rrow(chr="0", status="locus_unresolved")) == "unmapped"
 
 def test_classify_coord_off_non_numeric_remapped_pos():
     # Non-numeric remapped position → coord_off (caught by ValueError)
@@ -447,16 +447,16 @@ from benchmark_compare import load_remapped, compare_all
 
 
 REMAPPED_CSV = textwrap.dedent("""\
-    Name,Chr_equCab3,MapInfo_equCab3,Strand_equCab3,MappingStatus_equCab3
-    SNP_auto,1,1000,+,mapped
-    SNP_x,X,2000,+,mapped
-    SNP_x_alias,X,3000,-,mapped
-    SNP_auto2,3,5000,-,mapped
-    SNP_wrong_chr,5,9999,+,mapped
-    SNP_coord_off,1,1100,+,mapped
-    SNP_strand_wrong,1,7000,+,mapped
-    SNP_unmapped,0,0,N/A,unmapped
-    SNP_ambiguous,1,8000,+,ambiguous
+    Name,Chr_equCab3,MapInfo_equCab3,Strand_equCab3,anchor_equCab3,tie_equCab3
+    SNP_auto,1,1000,+,topseq_n_probe,unique
+    SNP_x,X,2000,+,topseq_n_probe,unique
+    SNP_x_alias,X,3000,-,topseq_n_probe,unique
+    SNP_auto2,3,5000,-,topseq_n_probe,unique
+    SNP_wrong_chr,5,9999,+,topseq_n_probe,unique
+    SNP_coord_off,1,1100,+,topseq_n_probe,unique
+    SNP_strand_wrong,1,7000,+,topseq_n_probe,unique
+    SNP_unmapped,0,0,N/A,N/A,N/A
+    SNP_ambiguous,1,8000,+,topseq_n_probe,locus_unresolved
 """)
 
 MANIFEST_MAIN = textwrap.dedent("""\
@@ -670,10 +670,10 @@ def test_stratify_delta_gt10_bucket():
 # ── load_remapped with coord_delta ────────────────────────────────────────────
 
 REMAPPED_CSV_WITH_DELTA = textwrap.dedent("""\
-    Name,Chr_equCab3,MapInfo_equCab3,Strand_equCab3,MappingStatus_equCab3,CoordDelta_equCab3
-    SNP_auto,1,1000,+,mapped,0
-    SNP_coord_off,1,1100,+,mapped,1
-    SNP_unmapped,0,0,N/A,unmapped,-1
+    Name,Chr_equCab3,MapInfo_equCab3,Strand_equCab3,anchor_equCab3,tie_equCab3,CoordDelta_equCab3
+    SNP_auto,1,1000,+,topseq_n_probe,unique,0
+    SNP_coord_off,1,1100,+,topseq_n_probe,unique,1
+    SNP_unmapped,0,0,N/A,N/A,N/A,-1
 """)
 
 
@@ -855,7 +855,7 @@ def test_integration_baseline_produces_diff_file(tmp_path, results_dir):
 REMAPPED_CSV_NEW_SCHEMA = textwrap.dedent("""\
     Name,Chr_equCab3,MapInfo_equCab3,Strand_equCab3,anchor_equCab3,tie_equCab3
     SNP_auto,1,1000,+,topseq_n_probe,unique
-    SNP_ambiguous,1,8000,+,topseq_n_probe,ambiguous
+    SNP_ambiguous,1,8000,+,topseq_n_probe,locus_unresolved
     SNP_topseq_only,2,5000,+,topseq_only,unique
     SNP_unmapped,0,0,N/A,N/A,N/A
     SNP_scaffold_resolved,3,7000,+,topseq_n_probe,scaffold_resolved
@@ -887,11 +887,11 @@ def test_load_remapped_new_schema_status_mapped(remapped_file_new_schema):
     assert row["remapped_status"] == "mapped"
 
 
-def test_load_remapped_new_schema_status_ambiguous(remapped_file_new_schema):
+def test_load_remapped_new_schema_status_locus_unresolved(remapped_file_new_schema):
     from benchmark_compare import load_remapped
     df = load_remapped(remapped_file_new_schema, "equCab3")
     row = df.loc[df["Name"] == "SNP_ambiguous"].iloc[0]
-    assert row["remapped_status"] == "ambiguous"
+    assert row["remapped_status"] == "locus_unresolved"
 
 
 def test_load_remapped_new_schema_status_topseq_only(remapped_file_new_schema):
@@ -916,9 +916,9 @@ def test_load_remapped_new_schema_scaffold_resolved_is_mapped(remapped_file_new_
     assert row["remapped_status"] == "mapped"
 
 
-def test_load_remapped_new_schema_ambiguous_classifies_correctly(
+def test_load_remapped_new_schema_locus_unresolved_classifies_correctly(
         remapped_file_new_schema, manifest_main_df):
-    """End-to-end: new-schema ambiguous marker should classify as 'ambiguous'."""
+    """End-to-end: new-schema locus_unresolved marker should classify as 'locus_unresolved'."""
     from benchmark_compare import load_remapped, compare_all
     # Add the ambiguous marker to a small manifest
     extra = pd.DataFrame([{
@@ -927,4 +927,4 @@ def test_load_remapped_new_schema_ambiguous_classifies_correctly(
     }])
     remapped_df = load_remapped(remapped_file_new_schema, "equCab3")
     result = compare_all(extra, remapped_df)
-    assert result.loc[result["Name"] == "SNP_ambiguous", "result"].iloc[0] == "ambiguous"
+    assert result.loc[result["Name"] == "SNP_ambiguous", "result"].iloc[0] == "locus_unresolved"

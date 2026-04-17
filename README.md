@@ -124,13 +124,24 @@ Deeper dives into specific concepts:
 
 ## Running the tests
 
+Unit tests only (no pipeline data needed):
+
 ```bash
 conda activate remap
-pytest tests/ -v
+pytest tests/ -v -k "not integration"
 ```
 
-Integration tests in `tests/test_benchmark_compare.py` need a real pipeline
-output directory and the flag `--results-dir <path>`.
+Full suite including the three benchmark-integration tests (require a real
+pipeline output directory — typically the `results/` folder from an earlier
+run):
+
+```bash
+pytest tests/ -v --results-dir /path/to/results
+```
+
+Without `--results-dir`, running the full suite will error out on the three
+integration tests in `tests/test_benchmark_compare.py` with a clear
+"Integration tests require --results-dir" message.
 
 ---
 

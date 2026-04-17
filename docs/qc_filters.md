@@ -10,10 +10,10 @@ trace CSV records the *first* filter that rejected each marker.
 
 | # | Stage | What it removes | Default behaviour | Override |
 |---|---|---|---|---|
-| 1 | Failed markers | Markers that couldn't be placed (`Strand` is `N/A`, meaning unmapped or ambiguous) | always on | — |
+| 1 | Failed markers | Markers that couldn't be placed (`Strand` is `N/A`, meaning unmapped or locus_unresolved) | always on | — |
 | 2 | Design conflict | SNPs whose Ref allele doesn't match the reference base, and deletions whose Ref sequence isn't in the genome | always on | — |
 | 3 | Coordinate role | Markers placed by less-trusted evidence | filter at `Moderate` (allows `topseq_n_probe` + `topseq_only`) | `--coordinate-role High`/`Low` |
-| 4 | Tie label | Markers whose locus required certain tie-break steps (e.g. picking a placed chromosome over a scaffold) | filter at `resolved` (rejects `scaffold_resolved` and `ambiguous`) | `--tie-label unique`/`avoid_scaffolds` |
+| 4 | Tie label | Markers whose locus required certain tie-break steps (e.g. picking a placed chromosome over a scaffold) | filter at `resolved` (rejects `scaffold_resolved` and `locus_unresolved`) | `--tie-label unique`/`avoid_scaffolds` |
 | 5 | Ref/Alt confidence | Markers where the Ref/Alt assignment came from the weaker of the two methods | filter at `Moderate` | `--refalt-conf High`/`Low` |
 | 6 | TopGenomicSeq MAPQ | Markers whose context-sequence alignment was low-quality | filter at MAPQ ≥ 30 | `--mapq-topseq N` (0–60) |
 | 7 | Probe MAPQ | Same idea, but for the probe alignment | disabled by default | `--mapq-probe N` (0–60) |

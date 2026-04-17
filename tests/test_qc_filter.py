@@ -380,7 +380,7 @@ def test_coord_role_na_always_excluded():
 # ── apply_tie_label_filter ─────────────────────────────────────────────────────
 
 _ALL_TIES = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
-             "CoordDelta_resolved", "scaffold_resolved", "ambiguous", "N/A"]
+             "CoordDelta_resolved", "scaffold_resolved", "locus_unresolved", "N/A"]
 
 
 def _tie_df(*values):
@@ -402,23 +402,23 @@ def test_tie_resolved_excludes_scaffold_resolved():
 
 def test_tie_avoid_scaffolds_adds_scaffold_resolved():
     result = apply_tie_label_filter(
-        _tie_df("unique", "scaffold_resolved", "ambiguous", "N/A"),
+        _tie_df("unique", "scaffold_resolved", "locus_unresolved", "N/A"),
         "testasm", "avoid_scaffolds"
     )
     assert set(result["tie_testasm"]) == {"unique", "scaffold_resolved"}
 
 
-def test_tie_ambiguous_always_excluded():
+def test_tie_locus_unresolved_always_excluded():
     for label in ("unique", "resolved", "avoid_scaffolds"):
-        result = apply_tie_label_filter(_tie_df("ambiguous"), "testasm", label)
-        assert len(result) == 0, f"ambiguous not excluded at label={label}"
+        result = apply_tie_label_filter(_tie_df("locus_unresolved"), "testasm", label)
+        assert len(result) == 0, f"locus_unresolved not excluded at label={label}"
 
 
 # ── apply_refalt_conf_filter ───────────────────────────────────────────────────
 
 _ALL_REFALT = [
     "NM_match", "NM_unmatch", "NM_validated", "NM_mismatch",
-    "NM_corrected", "NM_tied", "NM_N/A", "NM_only", "ambiguous", "N/A",
+    "NM_corrected", "NM_tied", "NM_N/A", "NM_only", "refalt_unresolved", "N/A",
 ]
 
 
@@ -452,10 +452,10 @@ def test_refalt_nm_mismatch_always_excluded():
         assert len(result) == 0, f"NM_mismatch not excluded at conf={conf}"
 
 
-def test_refalt_ambiguous_always_excluded():
+def test_refalt_unresolved_always_excluded():
     for conf in ("High", "Moderate", "Low"):
-        result = apply_refalt_conf_filter(_refalt_df("ambiguous"), "testasm", conf)
-        assert len(result) == 0, f"ambiguous not excluded at conf={conf}"
+        result = apply_refalt_conf_filter(_refalt_df("refalt_unresolved"), "testasm", conf)
+        assert len(result) == 0, f"refalt_unresolved not excluded at conf={conf}"
 
 
 # ── MAPQ range validation (0–60) ───────────────────────────────────────────────
@@ -495,7 +495,7 @@ def test_mapq_probe_rejects_negative():
 # ── format_three_d_table ───────────────────────────────────────────────────────
 
 def test_three_d_table_contains_header_and_totals():
-    three_d = {("topseq_n_probe", "unique"): {"NM_*": 10, "ambiguous": 0, "N/A": 0}}
+    three_d = {("topseq_n_probe", "unique"): {"NM_*": 10, "refalt_unresolved": 0, "N/A": 0}}
     output = format_three_d_table(three_d)
     assert "anchor" in output
     assert "tie" in output
@@ -505,8 +505,8 @@ def test_three_d_table_contains_header_and_totals():
 
 def test_three_d_table_skips_zero_rows():
     three_d = {
-        ("topseq_n_probe", "unique"):     {"NM_*": 5, "ambiguous": 0, "N/A": 0},
-        ("topseq_only",    "AS_resolved"):{"NM_*": 0, "ambiguous": 0, "N/A": 0},
+        ("topseq_n_probe", "unique"):     {"NM_*": 5, "refalt_unresolved": 0, "N/A": 0},
+        ("topseq_only",    "AS_resolved"):{"NM_*": 0, "refalt_unresolved": 0, "N/A": 0},
     }
     output = format_three_d_table(three_d)
     assert "topseq_only" not in output
@@ -514,8 +514,8 @@ def test_three_d_table_skips_zero_rows():
 
 def test_three_d_table_grand_total_correct():
     three_d = {
-        ("topseq_n_probe", "unique"):      {"NM_*": 3, "ambiguous": 1, "N/A": 2},
-        ("topseq_only",    "NM_resolved"): {"NM_*": 4, "ambiguous": 0, "N/A": 0},
+        ("topseq_n_probe", "unique"):      {"NM_*": 3, "refalt_unresolved": 1, "N/A": 2},
+        ("topseq_only",    "NM_resolved"): {"NM_*": 4, "refalt_unresolved": 0, "N/A": 0},
     }
     output = format_three_d_table(three_d)
     # Grand total = 3+1+2+4 = 10

@@ -42,79 +42,60 @@ def load_remapped_three_coords(path: str, assembly: str) -> pd.DataFrame:
     """
     Load the remapped CSV for a three-way probe/CIGAR/final coordinate comparison.
 
-    Supports both the new column schema (anchor_{assembly} + tie_{assembly}) and the
-    old schema (MappingStatus_{assembly}) for backward compatibility.
+    Requires the current-schema columns `anchor_{assembly}` and `tie_{assembly}`.
 
-    New schema → status mapping:
-      anchor == "topseq_only"  → "topseq_only"
-      tie    == "ambiguous"    → "ambiguous"
-      anchor == "N/A"          → "unmapped"
-      otherwise                → "mapped"
+    status derivation:
+      anchor == "topseq_only"       → "topseq_only"
+      tie    == "locus_unresolved"  → "locus_unresolved"
+      anchor == "N/A"               → "unmapped"
+      otherwise                     → "mapped"
     """
     col_chr         = f"Chr_{assembly}"
     col_pos_final   = f"MapInfo_{assembly}"
     col_pos_probe   = f"CoordProbe_{assembly}"
     col_pos_cigar   = f"Coord_TopSeqCIGAR_{assembly}"
     col_strand      = f"Strand_{assembly}"
-    col_status      = f"MappingStatus_{assembly}"   # old schema
-    col_anchor      = f"anchor_{assembly}"          # new schema
-    col_tie         = f"tie_{assembly}"             # new schema
+    col_anchor      = f"anchor_{assembly}"
+    col_tie         = f"tie_{assembly}"
     col_delta       = f"CoordDelta_{assembly}"
     col_source      = f"CoordSource_{assembly}"
 
     header = pd.read_csv(path, nrows=0)
 
-    has_new_schema = col_anchor in header.columns and col_tie in header.columns
-    has_old_schema = col_status in header.columns
-
-    # Build list of columns that must be present (status handled by schema detection)
     required_common = [col_chr, col_pos_final, col_pos_probe, col_pos_cigar,
-                       col_strand, col_delta, col_source]
+                       col_strand, col_delta, col_source, col_anchor, col_tie]
     for col in required_common:
         if col not in header.columns:
             raise ValueError(
                 f"Missing expected column: {col!r}\n"
-                f"Re-run remap_manifest.py to regenerate the remapped CSV with all columns."
+                f"Re-run remap_manifest.py to regenerate the remapped CSV with all "
+                f"current-schema columns (including anchor_{assembly} + tie_{assembly})."
             )
-
-    if has_new_schema:
-        status_cols = [col_anchor, col_tie]
-    elif has_old_schema:
-        status_cols = [col_status]
-    else:
-        raise ValueError(
-            f"Remapped CSV {path!r} has neither new-schema columns "
-            f"({col_anchor}, {col_tie}) nor old-schema column ({col_status}).\n"
-            f"Re-run remap_manifest.py to regenerate the remapped CSV."
-        )
 
     df = pd.read_csv(
         path,
         dtype={col_chr: str},
         usecols=["Name", col_chr, col_pos_final, col_pos_probe, col_pos_cigar,
-                 col_strand, col_delta, col_source] + status_cols,
+                 col_strand, col_delta, col_source, col_anchor, col_tie],
         low_memory=False,
     )
 
     # Build a unified status column
-    if has_new_schema:
-        def _derive_status(row):
-            anchor = row[col_anchor]
-            tie    = row[col_tie]
-            # pandas reads "N/A" as NaN; treat NaN anchor as unmapped
-            anchor_str = "" if pd.isna(anchor) else str(anchor)
-            tie_str    = "" if pd.isna(tie)    else str(tie)
-            if anchor_str == "topseq_only":
-                return "topseq_only"
-            if tie_str == "ambiguous":
-                return "ambiguous"
-            if anchor_str in ("N/A", ""):
-                return "unmapped"
-            return "mapped"
-        df["status"] = df.apply(_derive_status, axis=1)
-        df = df.drop(columns=[col_anchor, col_tie])
-    else:
-        df = df.rename(columns={col_status: "status"})
+    def _derive_status(row):
+        anchor = row[col_anchor]
+        tie    = row[col_tie]
+        # pandas reads "N/A" as NaN; treat NaN anchor as unmapped
+        anchor_str = "" if pd.isna(anchor) else str(anchor)
+        tie_str    = "" if pd.isna(tie)    else str(tie)
+        if anchor_str == "topseq_only":
+            return "topseq_only"
+        if tie_str == "locus_unresolved":
+            return "locus_unresolved"
+        if anchor_str in ("N/A", ""):
+            return "unmapped"
+        return "mapped"
+    df["status"] = df.apply(_derive_status, axis=1)
+    df = df.drop(columns=[col_anchor, col_tie])
 
     df = df.rename(columns={
         col_chr:       "chr",

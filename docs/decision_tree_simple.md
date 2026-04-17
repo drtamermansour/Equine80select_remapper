@@ -36,9 +36,9 @@ flowchart TD
     VALID -->|"No valid combinations"| TS_PRESENT{"TopSeq aligned?<br/>(gp1–gp4 vs gp5)"}:::process
 
     %% ── No-valid-triple rescue: TopSeq (gp1–gp4) ───────────────────────────
-    TS_PRESENT -->|"Yes (gp1–gp4)<br/>TopSeq has alignments<br/>(probe absent or invalid)"| RESCUE["Rank and resolve<br/>AS → ΔAS → NM → scaffold → ambiguous"]:::process
+    TS_PRESENT -->|"Yes (gp1–gp4)<br/>TopSeq has alignments<br/>(probe absent or invalid)"| RESCUE["Rank and resolve<br/>AS → ΔAS → NM → scaffold → locus_unresolved"]:::process
 
-    RESCUE -->|"tie=ambiguous"| AMB_TS["anchor=topseq_only · tie=ambiguous<br/>RefAlt=N/A · Chr=0"]:::chr0_to
+    RESCUE -->|"tie=locus_unresolved"| AMB_TS["anchor=topseq_only · tie=locus_unresolved<br/>RefAlt=N/A · Chr=0"]:::chr0_to
 
     RESCUE -->|"Winner found"| CIGAR_SC["Walk TopSeq CIGAR"]:::process
 
@@ -50,29 +50,29 @@ flowchart TD
 
     RA_RESCUE --> RA_RESCUE_CHECK{"Ref/Alt<br/>resolvable?"}:::process
 
-    RA_RESCUE_CHECK -->|"RefAlt=ambiguous<br/>(genome+NM tie)"| AMB_RA["anchor=topseq_only · tie=unique or *_resolved · RefAlt=ambiguous · Chr=0"]:::chr0_to
+    RA_RESCUE_CHECK -->|"RefAlt=refalt_unresolved<br/>(genome+NM tie)"| AMB_RA["anchor=topseq_only · tie=unique or *_resolved · RefAlt=refalt_unresolved · Chr=0"]:::chr0_to
 
     RA_RESCUE_CHECK -->|"Ref/Alt<br/>assigned"| TSONLY["anchor=topseq_only · tie=unique or *_resolved · RefAlt=NM_* · Chr≠0<br/>Coord=topseq_cigar · CoordDelta=−1 · MAPQ_Probe=NaN"]:::topseq_only
 
     %% ── No-valid-triple rescue: Probe (gp5 only) ───────────────────────────
-    TS_PRESENT -->|"No (gp5 only)<br/>probe aligned, TopSeq absent"| PROBE_RESCUE["Rank and resolve<br/>AS → ΔAS → NM → scaffold → ambiguous"]:::process
+    TS_PRESENT -->|"No (gp5 only)<br/>probe aligned, TopSeq absent"| PROBE_RESCUE["Rank and resolve<br/>AS → ΔAS → NM → scaffold → locus_unresolved"]:::process
 
     PROBE_RESCUE --> PROBE_OUT{"Probe rescue<br/>outcome?"}:::process
 
-    PROBE_OUT -->|"tie=ambiguous"| AMB_PROBE["anchor=probe_only · tie=ambiguous · RefAlt=N/A · Chr=0"]:::chr0_po
+    PROBE_OUT -->|"tie=locus_unresolved"| AMB_PROBE["anchor=probe_only · tie=locus_unresolved · RefAlt=N/A · Chr=0"]:::chr0_po
 
     PROBE_OUT -->|"Winner found"| RA_PROBE["Determine Ref/Alt by<br/>Genome lookup + NM compare"]:::process
 
     RA_PROBE --> RA_PROBE_CHECK{"Ref/Alt<br/>resolvable?"}:::process
 
-    RA_PROBE_CHECK -->|"RefAlt=ambiguous<br/>(genome+NM tie)"| AMB_PROBE_RA["anchor=probe_only · tie=unique or *_resolved<br/>RefAlt=ambiguous · Chr=0"]:::chr0_po
+    RA_PROBE_CHECK -->|"RefAlt=refalt_unresolved<br/>(genome+NM tie)"| AMB_PROBE_RA["anchor=probe_only · tie=unique or *_resolved<br/>RefAlt=refalt_unresolved · Chr=0"]:::chr0_po
 
     RA_PROBE_CHECK -->|"Ref/Alt<br/>assigned"| PROBEONLY["anchor=probe_only · tie=unique or *_resolved<br/>RefAlt=NM_* · Chr≠0<br/>Coord=probe_cigar · CoordDelta=−1 · MAPQ_TopGenomicSeq=NaN"]:::probe_only
 
     %% ── Valid-triple resolution ──────────────────────────────────────────────
-    VALID -->|"Valid triples<br/>exist"| RANK["Rank and resolve<br/>AS → ΔAS → NM → CoordDelta → scaffold → ambiguous"]:::process
+    VALID -->|"Valid triples<br/>exist"| RANK["Rank and resolve<br/>AS → ΔAS → NM → CoordDelta → scaffold → locus_unresolved"]:::process
 
-    RANK -->|"tie=ambiguous"| AMB1["anchor=topseq_n_probe · tie=ambiguous<br/>RefAlt=N/A · Chr=0"]:::chr0_tnp
+    RANK -->|"tie=locus_unresolved"| AMB1["anchor=topseq_n_probe · tie=locus_unresolved<br/>RefAlt=N/A · Chr=0"]:::chr0_tnp
 
     %% ── CIGAR cross-validation and coordinate selection (before Ref/Alt) ────
     RANK -->|"Winner resolved<br/>(tie=unique or *_resolved)"| PROBE_COORD["Walk probe & TopSeq CIGAR -> marker position"]:::process
@@ -97,7 +97,7 @@ flowchart TD
 
     DRA --> NM_WIN{"Ref/Alt<br/>assignable?"}:::process
 
-    NM_WIN -->|"No"| AMB2["anchor=topseq_n_probe · tie=unique or *_resolved<br/>RefAlt=ambiguous · Chr=0"]:::chr0_tnp
+    NM_WIN -->|"No"| AMB2["anchor=topseq_n_probe · tie=unique or *_resolved<br/>RefAlt=refalt_unresolved · Chr=0"]:::chr0_tnp
 
     NM_WIN -->|"Yes"| PLACED["anchor=topseq_n_probe · tie=unique or *_resolved<br/>RefAlt=NM_* · Chr≠0"]:::topseq_n_probe
 

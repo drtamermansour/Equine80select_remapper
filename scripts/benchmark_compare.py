@@ -189,12 +189,12 @@ def classify_marker(manifest_row: dict, remapped_row: dict) -> str:
     Classify a single marker into one of 6 outcome categories.
 
     Category priority (highest first):
-      unmapped  — remapped Chr=0 or Strand=N/A
-      ambiguous — MappingStatus=ambiguous
-      wrong_chr — Chr mismatch
-      coord_off — Chr match but MapInfo differs
+      unmapped         — remapped Chr=0 or Strand=N/A
+      locus_unresolved — remapped_status=="locus_unresolved" (pipeline rejected all candidate loci)
+      wrong_chr        — Chr mismatch
+      coord_off        — Chr match but MapInfo differs
       coord_correct_strand_wrong — Chr+MapInfo match but Strand differs
-      correct   — all three match
+      correct          — all three match
 
     Strand comparison: when `remapped_probe_strand` is provided it takes priority
     over `remapped_strand` (TopSeq alignment strand is uncorrelated with
@@ -217,11 +217,11 @@ def classify_marker(manifest_row: dict, remapped_row: dict) -> str:
     if r_chr == "0" or r_strand == "N/A":
         return "unmapped"
 
-    # Priority 2: ambiguous (note: ambiguous short-circuits all coordinate checks,
-    # so an ambiguous marker with a wrong chromosome is still counted as 'ambiguous',
-    # not 'wrong_chr')
-    if r_status == "ambiguous":
-        return "ambiguous"
+    # Priority 2: locus_unresolved (note: this short-circuits all coordinate
+    # checks, so a marker here with a wrong chromosome is still counted as
+    # 'locus_unresolved', not 'wrong_chr')
+    if r_status == "locus_unresolved":
+        return "locus_unresolved"
 
     # Priority 3: wrong chromosome
     if r_chr != m_chr:
@@ -324,13 +324,14 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
     and optionally coord_delta (if CoordDelta_{assembly} is present in the CSV).
     Chr is normalised (X aliases → X).
 
-    Supports both the new column schema (anchor_{assembly} + tie_{assembly}) and the
-    old schema (MappingStatus_{assembly}) for backward compatibility.  When both are
-    present the new schema takes precedence.
+    Requires the current-schema columns `anchor_{assembly}` and `tie_{assembly}`
+    (produced by remap_manifest.py's 3-dimension output framework). Legacy
+    CSVs that only carry the pre-3-D `MappingStatus_{assembly}` column are
+    not supported — re-run remap_manifest.py to upgrade.
 
-    New schema → remapped_status mapping:
+    remapped_status derivation:
       anchor == "topseq_only"              → "topseq_only"
-      tie    == "ambiguous"                → "ambiguous"
+      tie    == "locus_unresolved"         → "locus_unresolved"
       anchor == "N/A" (unmapped)           → "unmapped"
       otherwise                            → "mapped"
     """
@@ -340,35 +341,25 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
     col_probe_strand = f"ProbeStrand_{assembly}"
     col_ref    = f"Ref_{assembly}"
     col_alt    = f"Alt_{assembly}"
-    col_status = f"MappingStatus_{assembly}"   # old schema
-    col_anchor = f"anchor_{assembly}"          # new schema
-    col_tie    = f"tie_{assembly}"             # new schema
+    col_anchor = f"anchor_{assembly}"
+    col_tie    = f"tie_{assembly}"
     col_delta  = f"CoordDelta_{assembly}"
 
     header = pd.read_csv(path, nrows=0)
 
-    has_new_schema = col_anchor in header.columns and col_tie in header.columns
-    has_old_schema = col_status in header.columns
-
-    # Validate required columns
-    required = ["Name", col_chr, col_pos, col_strand]
-    if not has_new_schema and not has_old_schema:
-        required += [col_status]  # will produce a meaningful missing-column error
+    required = ["Name", col_chr, col_pos, col_strand, col_anchor, col_tie]
     missing = [c for c in required if c not in header.columns]
     if missing:
         raise ValueError(
             f"Remapped CSV {path!r} is missing expected columns: {missing}\n"
-            f"Check that --assembly matches the assembly used when running remap_manifest.py."
+            f"Re-run remap_manifest.py against this manifest to produce the "
+            f"current-schema output (anchor_{assembly} + tie_{assembly})."
         )
     has_delta = col_delta in header.columns
     has_refalt = col_ref in header.columns and col_alt in header.columns
     has_probe_strand = col_probe_strand in header.columns
 
-    usecols = ["Name", col_chr, col_pos, col_strand]
-    if has_new_schema:
-        usecols += [col_anchor, col_tie]
-    elif has_old_schema:
-        usecols.append(col_status)
+    usecols = ["Name", col_chr, col_pos, col_strand, col_anchor, col_tie]
     if has_delta:
         usecols.append(col_delta)
     if has_refalt:
@@ -390,24 +381,21 @@ def load_remapped(path: str, assembly: str) -> pd.DataFrame:
         )
 
     # Build a unified remapped_status column
-    if has_new_schema:
-        def _derive_status(row):
-            anchor = row[col_anchor]
-            tie    = row[col_tie]
-            # pandas reads "N/A" as NaN; treat NaN anchor as unmapped
-            anchor_str = "" if pd.isna(anchor) else str(anchor)
-            tie_str    = "" if pd.isna(tie)    else str(tie)
-            if anchor_str == "topseq_only":
-                return "topseq_only"
-            if tie_str == "ambiguous":
-                return "ambiguous"
-            if anchor_str in ("N/A", ""):
-                return "unmapped"
-            return "mapped"
-        df["remapped_status"] = df.apply(_derive_status, axis=1)
-        df = df.rename(columns={col_anchor: "anchor", col_tie: "tie"})
-    else:
-        df = df.rename(columns={col_status: "remapped_status"})
+    def _derive_status(row):
+        anchor = row[col_anchor]
+        tie    = row[col_tie]
+        # pandas reads "N/A" as NaN; treat NaN anchor as unmapped
+        anchor_str = "" if pd.isna(anchor) else str(anchor)
+        tie_str    = "" if pd.isna(tie)    else str(tie)
+        if anchor_str == "topseq_only":
+            return "topseq_only"
+        if tie_str == "locus_unresolved":
+            return "locus_unresolved"
+        if anchor_str in ("N/A", ""):
+            return "unmapped"
+        return "mapped"
+    df["remapped_status"] = df.apply(_derive_status, axis=1)
+    df = df.rename(columns={col_anchor: "anchor", col_tie: "tie"})
 
     rename_map = {
         col_chr:    "remapped_chr",
@@ -664,7 +652,7 @@ CATEGORIES = [
     "coord_off",
     "wrong_chr",
     "unmapped",
-    "ambiguous",
+    "locus_unresolved",
 ]
 
 
@@ -769,12 +757,12 @@ def format_three_d_accuracy_table(three_d: dict) -> str:
     qc_filter.format_three_d_table.
 
     Columns: correct | coord_off | wrong_chr | other | Total | Acc%
-      other = unmapped + ambiguous + coord_correct_strand_wrong
+      other = unmapped + locus_unresolved + coord_correct_strand_wrong
       Acc%  = (correct + coord_correct_strand_wrong) / Total  (coord-accurate)
     """
     ANCHOR_ORDER = ["topseq_n_probe", "topseq_only", "probe_only", "N/A"]
     TIE_ORDER    = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
-                    "CoordDelta_resolved", "scaffold_resolved", "ambiguous", "N/A"]
+                    "CoordDelta_resolved", "scaffold_resolved", "locus_unresolved", "N/A"]
     W = 88
 
     lines = [
@@ -803,7 +791,7 @@ def format_three_d_accuracy_table(three_d: dict) -> str:
             strand_bad = d["coord_correct_strand_wrong"]
             coord_off  = d["coord_off"]
             wrong_chr  = d["wrong_chr"]
-            other      = d["unmapped"] + d["ambiguous"] + strand_bad
+            other      = d["unmapped"] + d["locus_unresolved"] + strand_bad
             acc        = 100.0 * (correct + strand_bad) / total
             lines.append(
                 f"    tie={tie:<24} {correct:>10,} {coord_off:>10,}"
@@ -815,7 +803,7 @@ def format_three_d_accuracy_table(three_d: dict) -> str:
     grand_total  = sum(grand.values())
     grand_strand = grand["coord_correct_strand_wrong"]
     grand_acc    = 100.0 * (grand["correct"] + grand_strand) / grand_total if grand_total else 0.0
-    grand_other  = grand["unmapped"] + grand["ambiguous"] + grand_strand
+    grand_other  = grand["unmapped"] + grand["locus_unresolved"] + grand_strand
     lines += [
         "  " + "─" * 84,
         f"  {'Total':<28} {grand['correct']:>10,} {grand['coord_off']:>10,}"
@@ -916,7 +904,7 @@ def format_qc_impact_section(impact: dict) -> list[str]:
     w("  Confusion matrix  (stage × benchmark result)")
     conf = impact["confusion"]
     cats = [c for c in ["correct", "coord_correct_strand_wrong", "coord_off",
-                         "wrong_chr", "unmapped", "ambiguous"] if c in conf.columns]
+                         "wrong_chr", "unmapped", "locus_unresolved"] if c in conf.columns]
     header = f"    {'stage':<28} " + " ".join(f"{c[:10]:>10}" for c in cats) + f" {'total':>8}"
     w(header)
     w("    " + "-" * (len(header) - 4))
@@ -1071,7 +1059,7 @@ def write_report(
     if three_d is not None:
         w("3-DIMENSION ACCURACY BREAKDOWN")
         w("  Acc% = (correct + coord_correct_strand_wrong) / Total  [coord-accurate]")
-        w("  other = unmapped + ambiguous + coord_correct_strand_wrong")
+        w("  other = unmapped + locus_unresolved + coord_correct_strand_wrong")
         w()
         w(format_three_d_accuracy_table(three_d))
         w()

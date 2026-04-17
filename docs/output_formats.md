@@ -10,7 +10,9 @@ output-dir/
 ├── remapping/                                 step 2 — alignment & coordinate resolution
 │   ├── {prefix}_remapped_{assembly}.csv         full manifest with quality columns added
 │   ├── remapping_Report.txt                     per-decision summary
-│   ├── ambiguous_markers.csv                    competing alignments for ambiguous markers
+│   ├── topseq_n_probe_unresolved_markers.csv    competing triples for main-path unresolved markers
+│   ├── topseq_only_unresolved_markers.csv       rescue-path unresolved markers (locus or Ref/Alt)
+│   ├── probe_only_unresolved_markers.csv        rescue-path unresolved markers (locus or Ref/Alt)
 │   ├── scaffold_resolved_markers.csv            competing alignments resolved by placed-chromosome rule
 │   └── nm_position_resolved_markers.csv         competing alignments resolved by AS / dAS / NM / CoordDelta
 └── qc/                                        step 3 — filter cascade & final outputs
@@ -56,7 +58,7 @@ appended. Column names embed the assembly label given via `-a` (e.g. `-a equCab3
 
 | Column | Type | Meaning |
 |---|---|---|
-| `Chr_{assembly}` | str | Chromosome (`"0"` = unmapped or ambiguous) |
+| `Chr_{assembly}` | str | Chromosome (`"0"` = unmapped or unresolved) |
 | `MapInfo_{assembly}` | int | **Final 1-based position** chosen by the pipeline |
 | `Strand_{assembly}` | str | `+`, `−`, or `N/A` — TopGenomicSeq alignment strand |
 | `Ref_{assembly}` | str | Reference allele in the **TopGenomicSeq alignment orientation**. `qc_filter.py` strand-normalises to + strand for VCF/BIM output. |
@@ -85,8 +87,8 @@ appended. Column names embed the assembly label given via `-a` (e.g. `-a equCab3
 |---|---|
 | `AlignmentStatus_{assembly}` | `gp1` / `gp2` / `gp3` / `gp4` / `gp5` / `unmapped` (raw alignment census; see [algorithm overview](algorithm_overview.md)) |
 | `anchor_{assembly}` | `topseq_n_probe` / `topseq_only` / `probe_only` / `N/A` (which evidence chain placed the marker) |
-| `tie_{assembly}` | `unique` / `AS_resolved` / `dAS_resolved` / `NM_resolved` / `CoordDelta_resolved` / `scaffold_resolved` / `ambiguous` / `N/A` (how multi-locus ties were broken) |
-| `RefAltMethodAgreement_{assembly}` | `NM_match` / `NM_validated` / `NM_N/A` / `NM_tied` / `NM_only` / `NM_unmatch` / `NM_corrected` / `NM_mismatch` / `ambiguous` / `N/A` (agreement between genome lookup and NM-based Ref/Alt determination) |
+| `tie_{assembly}` | `unique` / `AS_resolved` / `dAS_resolved` / `NM_resolved` / `CoordDelta_resolved` / `scaffold_resolved` / `locus_unresolved` / `N/A` (how multi-locus ties were broken) |
+| `RefAltMethodAgreement_{assembly}` | `NM_match` / `NM_validated` / `NM_N/A` / `NM_tied` / `NM_only` / `NM_unmatch` / `NM_corrected` / `NM_mismatch` / `refalt_unresolved` / `N/A` (agreement between genome lookup and NM-based Ref/Alt determination) |
 
 For the meaning of each `RefAltMethodAgreement` value, see
 [NM_comparison.md](NM_comparison.md). For the per-marker decision flow that

@@ -457,7 +457,7 @@ _TIE_AVOID_SCAFFOLDS = _TIE_RESOLVED | frozenset(["scaffold_resolved"])
 def apply_tie_label_filter(df, assembly, label):
     """Keep rows whose tie_{assembly} meets the required label.
 
-    tie=ambiguous is always excluded.
+    tie=locus_unresolved is always excluded.
     unique:          unique only
     resolved:        unique + AS/dAS/NM/CoordDelta_resolved  (default)
     avoid_scaffolds: resolved + scaffold_resolved
@@ -484,7 +484,7 @@ _REFALT_LOW      = _REFALT_MODERATE | frozenset(["NM_only", "NM_unmatch", "NM_co
 def apply_refalt_conf_filter(df, assembly, conf):
     """Keep rows whose RefAltMethodAgreement_{assembly} meets the required confidence.
 
-    NM_mismatch and ambiguous are always excluded.
+    NM_mismatch and refalt_unresolved are always excluded.
     High:     NM_match, NM_validated
     Moderate: High + NM_N/A, NM_tied  (default)
     Low:      Moderate + NM_only, NM_unmatch, NM_corrected
@@ -506,22 +506,22 @@ def apply_refalt_conf_filter(df, assembly, conf):
 def format_three_d_table(three_d):
     """Format a 3-Dimension Summary (anchor × tie × RefAlt bucket) as a string.
 
-    three_d: dict mapping (anchor, tie) → {"NM_*": int, "ambiguous": int, "N/A": int}
+    three_d: dict mapping (anchor, tie) → {"NM_*": int, "refalt_unresolved": int, "N/A": int}
     """
     ANCHOR_ORDER = ["topseq_n_probe", "topseq_only", "probe_only", "N/A"]
     TIE_ORDER    = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
-                    "CoordDelta_resolved", "scaffold_resolved", "ambiguous", "N/A"]
+                    "CoordDelta_resolved", "scaffold_resolved", "locus_unresolved", "N/A"]
     W = 70
 
     lines = [
         "═" * W,
         "3-Dimension Summary  (anchor × tie × Ref/Alt outcome)  — final markers",
-        f"  {'anchor / tie':<28} {'NM_*(Chr≠0)':>10} {'amb(Chr=0)':>10}"
+        f"  {'anchor / tie':<28} {'NM_*(Chr≠0)':>10} {'unresolved(Chr=0)':>17}"
         f" {'N/A(Chr=0)':>10} {'Total':>8}",
-        "  " + "─" * 68,
+        "  " + "─" * 76,
     ]
 
-    grand = {"NM_*": 0, "ambiguous": 0, "N/A": 0}
+    grand = {"NM_*": 0, "refalt_unresolved": 0, "N/A": 0}
     for anchor in ANCHOR_ORDER:
         anchor_data = {t: d for (a, t), d in three_d.items() if a == anchor}
         if sum(v for d in anchor_data.values() for v in d.values()) == 0:
@@ -529,20 +529,20 @@ def format_three_d_table(three_d):
         lines.append(f"  anchor={anchor}")
         for tie in TIE_ORDER:
             d = anchor_data.get(tie, {})
-            nm, amb, na = d.get("NM_*", 0), d.get("ambiguous", 0), d.get("N/A", 0)
+            nm, amb, na = d.get("NM_*", 0), d.get("refalt_unresolved", 0), d.get("N/A", 0)
             if nm + amb + na == 0:
                 continue
             lines.append(
-                f"    tie={tie:<24} {nm:>10,} {amb:>10,} {na:>10,} {nm+amb+na:>8,}"
+                f"    tie={tie:<24} {nm:>10,} {amb:>17,} {na:>10,} {nm+amb+na:>8,}"
             )
             grand["NM_*"] += nm
-            grand["ambiguous"] += amb
+            grand["refalt_unresolved"] += amb
             grand["N/A"] += na
 
     total = sum(grand.values())
     lines += [
-        "  " + "─" * 68,
-        f"  {'Total':<28} {grand['NM_*']:>10,} {grand['ambiguous']:>10,}"
+        "  " + "─" * 76,
+        f"  {'Total':<28} {grand['NM_*']:>10,} {grand['refalt_unresolved']:>17,}"
         f" {grand['N/A']:>10,} {total:>8,}",
     ]
     return "\n".join(lines)
@@ -590,10 +590,10 @@ def run_qc(args):
     write_mapq_histo(df["MAPQ_Probe"].dropna(), 2,
                      os.path.join(assessment_dir, "MAPQ_Probe.histo"))
 
-    # ── Stage 1: Failed markers (Strand=N/A — unmapped + ambiguous) ─────────
+    # ── Stage 1: Failed markers (Strand=N/A — unmapped + locus_unresolved) ──
     df_mapped = df[df[col_strand].isin(["+", "-"])].copy()
     _tag_removed(why_filtered, df.index, df_mapped.index, "stage_1_failed_markers")
-    qc_stats["Failed markers (unmapped + ambiguous)"] = len(df_mapped)
+    qc_stats["Failed markers (unmapped + locus_unresolved)"] = len(df_mapped)
     print(f"[qc] Stage 1 — Failed markers removed: {len(df) - len(df_mapped):,}; remaining: {len(df_mapped):,}")
 
     # ── VCF generation + strand normalisation (needed by Stage 2) ───────────
@@ -885,10 +885,10 @@ def run_qc(args):
         col_r_f = f"RefAltMethodAgreement_{assembly}"
         three_d = {}
         for (a, t, r), cnt in df_final.groupby([col_a_f, col_t_f, col_r_f]).size().items():
-            bucket = "NM_*" if r.startswith("NM_") else ("ambiguous" if r == "ambiguous" else "N/A")
+            bucket = "NM_*" if r.startswith("NM_") else ("refalt_unresolved" if r == "refalt_unresolved" else "N/A")
             key = (a, t)
             if key not in three_d:
-                three_d[key] = {"NM_*": 0, "ambiguous": 0, "N/A": 0}
+                three_d[key] = {"NM_*": 0, "refalt_unresolved": 0, "N/A": 0}
             three_d[key][bucket] += cnt
         with open(report_path, "a") as f:
             f.write("\n" + format_three_d_table(three_d) + "\n")

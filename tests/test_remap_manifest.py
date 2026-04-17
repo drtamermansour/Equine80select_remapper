@@ -225,7 +225,7 @@ def test_make_competing_rows():
     assert len(rows) == 2
     assert rows[0]['PairRank'] == 1
     assert rows[0]['TopSeqAllele'] == 'A'
-    assert rows[0]['AmbiguityReason'] == 'position_tie'
+    assert rows[0]['UnresolvedReason'] == 'position_tie'
     assert rows[0]['TopSeqChr'] == 'chr1'
     assert rows[0]['TopSeqNM'] == 0
     assert rows[0]['MinMAPQ'] == 60
@@ -853,7 +853,7 @@ def test_build_valid_triples_different_chr_discarded():
 def test_topseq_rescue_single_alignment_unique():
     """One mapped alignment → unique."""
     ts_aligns = {"A": [_ts("chr1", 100, as_score=120)], "B": []}
-    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    allele, ts, tie, _ = best_topseq_rescue(ts_aligns)
     assert allele == "A"
     assert ts["Chr"] == "chr1"
     assert tie == "unique"
@@ -865,7 +865,7 @@ def test_topseq_rescue_as_resolves():
         "A": [_ts("chr1", 100, as_score=150)],
         "B": [_ts("chr2", 200, as_score=100)],
     }
-    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    allele, ts, tie, _ = best_topseq_rescue(ts_aligns)
     assert ts["Chr"] == "chr1"
     assert tie == "AS_resolved"
 
@@ -876,7 +876,7 @@ def test_topseq_rescue_nm_resolves():
         "A": [_ts("chr1", 100, as_score=120, nm=0)],
         "B": [_ts("chr2", 200, as_score=120, nm=2)],
     }
-    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    allele, ts, tie, _ = best_topseq_rescue(ts_aligns)
     assert ts["Chr"] == "chr1"
     assert tie == "NM_resolved"
 
@@ -887,27 +887,27 @@ def test_topseq_rescue_scaffold_resolved():
         "A": [_ts("chr1",     100, as_score=120, nm=0)],
         "B": [_ts("NW_12345", 200, as_score=120, nm=0)],
     }
-    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    allele, ts, tie, _ = best_topseq_rescue(ts_aligns)
     assert ts["Chr"] == "chr1"
     assert tie == "scaffold_resolved"
 
 
-def test_topseq_rescue_ambiguous():
+def test_topseq_rescue_locus_unresolved():
     """Two placed chrs with identical metrics → ambiguous."""
     ts_aligns = {
         "A": [_ts("chr1", 100, as_score=120, nm=0)],
         "B": [_ts("chr2", 200, as_score=120, nm=0)],
     }
-    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    allele, ts, tie, _ = best_topseq_rescue(ts_aligns)
     assert allele is None
     assert ts is None
-    assert tie == "ambiguous"
+    assert tie == "locus_unresolved"
 
 
 def test_topseq_rescue_no_mapped_alignment():
     """No mapped TopSeq alignments → returns (None, None, 'N/A')."""
     ts_aligns = {"A": [], "B": []}
-    allele, ts, tie = best_topseq_rescue(ts_aligns)
+    allele, ts, tie, _ = best_topseq_rescue(ts_aligns)
     assert allele is None
     assert ts is None
     assert tie == "N/A"
@@ -918,7 +918,7 @@ def test_topseq_rescue_no_mapped_alignment():
 def test_probe_rescue_single_alignment_unique():
     """One probe alignment → unique."""
     pb_aligns = [_pb("chr1", 100, as_score=80)]
-    pb, tie = best_probe_rescue(pb_aligns)
+    pb, tie, _ = best_probe_rescue(pb_aligns)
     assert pb["Chr"] == "chr1"
     assert tie == "unique"
 
@@ -926,20 +926,20 @@ def test_probe_rescue_single_alignment_unique():
 def test_probe_rescue_as_resolves():
     """Two probe positions, different AS → AS_resolved."""
     pb_aligns = [_pb("chr1", 100, as_score=80), _pb("chr2", 200, as_score=60)]
-    pb, tie = best_probe_rescue(pb_aligns)
+    pb, tie, _ = best_probe_rescue(pb_aligns)
     assert pb["Chr"] == "chr1"
     assert tie == "AS_resolved"
 
 
-def test_probe_rescue_ambiguous():
+def test_probe_rescue_locus_unresolved():
     """Two placed chrs, identical AS and NM → ambiguous."""
     pb_aligns = [
         _pb("chr1", 100, as_score=80, nm=0),
         _pb("chr2", 200, as_score=80, nm=0),
     ]
-    pb, tie = best_probe_rescue(pb_aligns)
+    pb, tie, _ = best_probe_rescue(pb_aligns)
     assert pb is None
-    assert tie == "ambiguous"
+    assert tie == "locus_unresolved"
 
 
 # ── rank_and_resolve ──────────────────────────────────────────────────────────
@@ -1006,8 +1006,8 @@ def test_rank_and_resolve_scaffold_resolved():
     assert result[2]["Chr"] == "chr1"
 
 
-def test_rank_and_resolve_ambiguous():
-    """Two placed chrs, identical metrics → ambiguous."""
+def test_rank_and_resolve_locus_unresolved():
+    """Two placed chrs, identical metrics → tie=locus_unresolved."""
     ts_a = _ts("chr1", 100, as_score=120, nm=0)
     ts_b = _ts("chr2", 200, as_score=120, nm=0)
     pb_a = _pb("chr1", 100, as_score=80, nm=0)
@@ -1017,7 +1017,7 @@ def test_rank_and_resolve_ambiguous():
                                all_ts_aligns={"A": [ts_a], "B": [ts_b]},
                                all_pb_aligns=[pb_a, pb_b],
                                info=_info(), assay_type="II")
-    assert result[0] == "ambiguous"
+    assert result[0] == "locus_unresolved"
 
 
 # ── determine_ref_alt_v2 ──────────────────────────────────────────────────────
@@ -1100,8 +1100,8 @@ def test_refalt_v2_snp_nm_only_genome_fails():
     assert agree == "NM_only"
 
 
-def test_refalt_v2_snp_ambiguous_both_fail():
-    """Both methods fail → ambiguous (None, None, 'ambiguous')."""
+def test_refalt_v2_snp_refalt_unresolved_both_fail():
+    """Both methods fail → refalt_unresolved (None, None, 'refalt_unresolved')."""
     ts_a = _ts("chr1", 1000, nm=1)
     ts_b = _ts("chr1", 1000, nm=1)
     ts_aligns = {"A": [ts_a], "B": [ts_b]}
@@ -1110,17 +1110,17 @@ def test_refalt_v2_snp_ambiguous_both_fail():
     result = determine_ref_alt_v2(
         "A", ts_a, ts_aligns, info, fasta, "chr1", 1000, "+"
     )
-    assert result[:3] == (None, None, "ambiguous")
+    assert result[:3] == (None, None, "refalt_unresolved")
 
 
-def test_refalt_v2_indel_probe_only_ambiguous():
+def test_refalt_v2_indel_probe_only_refalt_unresolved():
     """Indel marker with probe-only (no winning_ts) → ambiguous, not NM_tied."""
     info = {"AlleleA": "AT", "AlleleB": ""}
     fasta = MagicMock()
     result = determine_ref_alt_v2(
         None, None, {}, info, fasta, "chr1", 1000, "+"
     )
-    assert result[:3] == (None, None, "ambiguous")
+    assert result[:3] == (None, None, "refalt_unresolved")
 
 
 def test_refalt_v2_deletion_nm_validated():

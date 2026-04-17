@@ -37,8 +37,8 @@ Breakdown by alignment/decision state:
 
 | Result | Anchor | RefAltMethodAgreement | N |
 |---|---|---|---|
-| `unmapped` | topseq_n_probe | `ambiguous` | 60 |
-| `unmapped` | topseq_only | `ambiguous` | 4 |
+| `unmapped` | topseq_n_probe | `refalt_unresolved` | 60 |
+| `unmapped` | topseq_only | `refalt_unresolved` | 4 |
 | `coord_off` | topseq_n_probe | `NM_validated` | 26 |
 | `coord_off` | topseq_n_probe | `NM_corrected` | 12 |
 | `coord_off` | topseq_n_probe | `NM_mismatch` | 10 |
@@ -52,7 +52,7 @@ Breakdown by alignment/decision state:
 
 **Why these can't be fixed:**
 
-- *64 `unmapped + ambiguous`* — minimap2 reported MAPQ=0 and our pipeline
+- *64 `unmapped + refalt_unresolved`* — minimap2 reported MAPQ=0 and our pipeline
   couldn't determine Ref/Alt confidently (genome lookup failed and NM
   comparison was tied). These live in repeat regions where neither allele
   fits cleanly. Including them would add unreliable data; excluding them is
@@ -78,20 +78,20 @@ Breakdown:
 
 | Result | Anchor | Tie | RefAltMethodAgreement | N |
 |---|---|---|---|---|
-| `unmapped` | topseq_n_probe | unique | `ambiguous` | 46 |
-| `unmapped` | topseq_only | ambiguous | — | 1 |
+| `unmapped` | topseq_n_probe | unique | `refalt_unresolved` | 46 |
+| `unmapped` | topseq_only | locus_unresolved | — | 1 |
 | `coord_off` | topseq_n_probe | — | — | 6 |
 | `wrong_chr` | topseq_n_probe/topseq_only | — | — | 2 |
 
-**The 47 `unmapped + ambiguous` markers (dominant case):**
+**The 47 `unmapped + refalt_unresolved` markers (dominant case):**
 
 All have MAPQ=0 on both TopSeq and probe alignments, unique-locus tie, but
-`RefAltMethodAgreement=ambiguous` (both genome-lookup and NM comparison
+`RefAltMethodAgreement=refalt_unresolved` (both genome-lookup and NM comparison
 failed). Minimap2 successfully placed both sequences at the manifest's
 position but flagged the placement as low-confidence (MAPQ 0 means the
 aligner saw multiple equally-good hits).
 
-Our pipeline's Chr=0 rule triggers when RefAlt is ambiguous. This is
+Our pipeline's Chr=0 rule triggers when RefAlt is unresolved. This is
 **by design** — if we can't confidently determine which allele is Ref,
 emitting the marker would mislead downstream GWAS / imputation. The
 correct position exists, but we can't trust ourselves to annotate it

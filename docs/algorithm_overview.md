@@ -72,7 +72,7 @@ columns:
 - **`anchor_{assembly}`** — which evidence chain placed the marker:
   `topseq_n_probe`, `topseq_only`, `probe_only`, or `N/A` (unmapped).
 - **`tie_{assembly}`** — how a multi-locus tie was resolved (or
-  `ambiguous` if it couldn't be).
+  `locus_unresolved` if it couldn't be).
 - **`RefAltMethodAgreement_{assembly}`** — agreement between the two Ref/Alt
   determination methods (genome lookup vs `NM` comparison).
 
@@ -120,7 +120,7 @@ When several valid triples point to different loci, this waterfall picks one:
 | 4 | Lowest `NM_sum = ts.NM + pb.NM` | `NM_resolved` |
 | 5 | Lowest `CoordDelta` (probe vs TopSeq agreement) | `CoordDelta_resolved` |
 | 6 | Placed chromosome wins over unplaced scaffold | `scaffold_resolved` |
-| 7 | All steps exhausted | `ambiguous` (Chr=0) |
+| 7 | All steps exhausted | `locus_unresolved` (Chr=0) |
 
 > MAPQ is reported as a diagnostic column, **not** used for ranking.
 
@@ -141,7 +141,7 @@ When no valid triple exists:
   CIGAR walk. No strand-agreement check possible (no TopSeq anchor) so these
   are inherently lower-confidence.
 - **TopSeq-rescue ambiguity does not fall through to probe rescue** — once
-  TopSeq has placed the marker ambiguously, the probe cannot improve on it.
+  TopSeq has failed to resolve the locus, the probe cannot improve on it.
 
 Empirical accuracy on the EquCab2→EquCab3 benchmark:
 

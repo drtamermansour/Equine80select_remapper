@@ -421,26 +421,27 @@ def is_placed_chromosome(name):
 
 def _make_competing_rows(pairs, reason):
     """
-    Builds a list of row dicts for the ambiguous/scaffold CSV files.
+    Build row dicts for the *_unresolved_markers.csv / scaffold_resolved CSVs.
 
     pairs  — list of (allele, topseq_align_dict, probe_align_dict)
-    reason — 'position_tie' | 'NM_tie' | 'scaffold_resolved'
+    reason — 'position_tie' | 'NM_tie' | 'AS_tie' | 'dAS_tie' |
+             'CoordDelta_tie' | 'scaffold_resolved'
     """
     rows = []
     for rank, (allele, ts, pb) in enumerate(pairs, 1):
         rows.append({
-            "AmbiguityReason": reason,
-            "PairRank":        rank,
-            "TopSeqAllele":    allele,
-            "TopSeqChr":       ts["Chr"],
-            "TopSeqPos":       ts["Pos"],
-            "TopSeqStrand":    ts["Strand"],
-            "TopSeqMAPQ":      ts["MAPQ"],
-            "TopSeqNM":        ts["NM"],
-            "ProbeChr":        pb["Chr"],
-            "ProbePos":        pb["Pos"],
-            "ProbeMAPQ":       pb["MAPQ"],
-            "MinMAPQ":         min(ts["MAPQ"], pb["MAPQ"]),
+            "UnresolvedReason": reason,
+            "PairRank":         rank,
+            "TopSeqAllele":     allele,
+            "TopSeqChr":        ts["Chr"],
+            "TopSeqPos":        ts["Pos"],
+            "TopSeqStrand":     ts["Strand"],
+            "TopSeqMAPQ":       ts["MAPQ"],
+            "TopSeqNM":         ts["NM"],
+            "ProbeChr":         pb["Chr"],
+            "ProbePos":         pb["Pos"],
+            "ProbeMAPQ":        pb["MAPQ"],
+            "MinMAPQ":          min(ts["MAPQ"], pb["MAPQ"]),
         })
     return rows
 
@@ -501,20 +502,23 @@ def _rank_single_aligns(candidates):
     Rank a list of (label, align_dict) by AS → ΔAS → NM → scaffold_resolved.
 
     candidates : list of (label, align_dict) — only mapped alignments.
-    Returns (label, align_dict, tie_status) or (None, None, 'ambiguous'/'N/A').
+    Returns (label, align_dict, tie_status, competing_pool):
+      - competing_pool is the list of (label, align_dict) pairs still tied
+        after the final ranking step when tie_status == 'locus_unresolved';
+        otherwise None.
 
     tie_status values: 'unique', 'AS_resolved', 'dAS_resolved', 'NM_resolved',
-                       'scaffold_resolved', 'ambiguous', 'N/A' (no mapped aligns).
+                       'scaffold_resolved', 'locus_unresolved', 'N/A' (no mapped aligns).
     """
     mapped = [(lbl, a) for lbl, a in candidates
               if a.get("Chr", "*") not in ("*", "0")]
     if not mapped:
-        return None, None, "N/A"
+        return None, None, "N/A", None
 
     # Unique locus check
     unique_loci = {(a["Chr"], a["Pos"]) for _, a in mapped}
     if len(unique_loci) == 1:
-        return mapped[0][0], mapped[0][1], "unique"
+        return mapped[0][0], mapped[0][1], "unique", None
 
     all_as = [a.get("AS", -1) for _, a in mapped]
 
@@ -523,7 +527,7 @@ def _rank_single_aligns(candidates):
     top = [(lbl, a) for lbl, a in mapped if a.get("AS", -1) == top_as]
     top_loci = {(a["Chr"], a["Pos"]) for _, a in top}
     if len(top_loci) == 1:
-        return top[0][0], top[0][1], "AS_resolved"
+        return top[0][0], top[0][1], "AS_resolved", None
 
     # Step 2: ΔAS — for each surviving alignment, compute AS_this minus
     # the best AS of any OTHER alignment in the full mapped pool.
@@ -539,31 +543,32 @@ def _rank_single_aligns(candidates):
     top = [(lbl, a) for lbl, a in top if _das(a) == top_das]
     top_loci = {(a["Chr"], a["Pos"]) for _, a in top}
     if len(top_loci) == 1:
-        return top[0][0], top[0][1], "dAS_resolved"
+        return top[0][0], top[0][1], "dAS_resolved", None
 
     # Step 3: NM — keep lowest
     min_nm = min(a.get("NM", 999) for _, a in top)
     top = [(lbl, a) for lbl, a in top if a.get("NM", 999) == min_nm]
     top_loci = {(a["Chr"], a["Pos"]) for _, a in top}
     if len(top_loci) == 1:
-        return top[0][0], top[0][1], "NM_resolved"
+        return top[0][0], top[0][1], "NM_resolved", None
 
     # Step 4: scaffold_resolved — prefer placed chromosome over scaffold
     placed = [(lbl, a) for lbl, a in top if is_placed_chromosome(a["Chr"])]
     placed_loci = {(a["Chr"], a["Pos"]) for _, a in placed}
     if placed and len(placed_loci) == 1:
-        return placed[0][0], placed[0][1], "scaffold_resolved"
+        return placed[0][0], placed[0][1], "scaffold_resolved", None
 
-    return None, None, "ambiguous"
+    return None, None, "locus_unresolved", top
 
 
 def best_topseq_rescue(ts_aligns):
     """
     Pick the best TopSeq alignment across both alleles when no valid triple exists.
 
-    Uses _rank_single_aligns (AS → ΔAS → NM → scaffold_resolved → ambiguous).
-    Returns (allele, align_dict, tie_status).
-    allele and align_dict are None when no mapped alignment exists or on ambiguous.
+    Uses _rank_single_aligns (AS → ΔAS → NM → scaffold_resolved → locus_unresolved).
+    Returns (allele, align_dict, tie_status, competing_pool):
+      competing_pool is populated (list of (allele, align_dict)) only when
+      tie_status == "locus_unresolved"; otherwise None.
     """
     candidates = [
         (allele, a)
@@ -578,18 +583,19 @@ def best_probe_rescue(probe_aligns):
     """
     Pick the best probe alignment when TopSeq did not align at all.
 
-    Uses _rank_single_aligns (AS → ΔAS → NM → scaffold_resolved → ambiguous).
+    Uses _rank_single_aligns (AS → ΔAS → NM → scaffold_resolved → locus_unresolved).
     No strand filtering — without a TopSeq strand anchor, expected strand
     cannot be determined for TOP/BOT markers.
-    Returns (align_dict, tie_status). align_dict is None on ambiguous.
+    Returns (align_dict, tie_status, competing_pool):
+      competing_pool is populated only when tie_status == "locus_unresolved".
     """
     candidates = [
         ("probe", pb)
         for pb in probe_aligns
         if pb.get("Chr", "*") not in ("*", "0")
     ]
-    _, align, tie = _rank_single_aligns(candidates)
-    return align, tie
+    _, align, tie, pool = _rank_single_aligns(candidates)
+    return align, tie, pool
 
 
 def rank_and_resolve(triples, all_ts_aligns, all_pb_aligns, info, assay_type):
@@ -604,12 +610,12 @@ def rank_and_resolve(triples, all_ts_aligns, all_pb_aligns, info, assay_type):
       3. NM sum: ts.NM + pb.NM, lower wins → 'NM_resolved'
       4. CoordDelta: |probe_coord - CIGAR_coord|, lower wins → 'CoordDelta_resolved'
       5. Scaffold resolved: placed chr over scaffold → 'scaffold_resolved'
-      6. Ambiguous → 'ambiguous'
+      6. Unresolved → 'locus_unresolved'
 
     Returns one of:
       ('unique'|'AS_resolved'|'dAS_resolved'|'NM_resolved'|
        'CoordDelta_resolved'|'scaffold_resolved', allele, ts, pb [,competing])
-      ('ambiguous', competing)
+      ('locus_unresolved', competing)
     """
     all_ts_flat = [a for aligns in all_ts_aligns.values() for a in aligns]
     all_pb_flat = list(all_pb_aligns)
@@ -700,9 +706,9 @@ def rank_and_resolve(triples, all_ts_aligns, all_pb_aligns, info, assay_type):
         allele, ts, pb = placed[0]
         return ("scaffold_resolved", allele, ts, pb, competing)
 
-    # Step 6: ambiguous
+    # Step 6: locus unresolved
     competing = _make_competing_rows(top, "position_tie")
-    return ("ambiguous", competing)
+    return ("locus_unresolved", competing)
 
 
 # ── REF/ALT DETERMINATION ────────────────────────────────────────────────────
@@ -807,13 +813,13 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
     For SNPs (both alleles are single nucleotides):
       - Genome lookup (primary): resolve_ref_from_genome → strand-aware.
       - NM comparison (parallel): determine_ref_alt when TopSeq aligned.
-      - agreement_str: 'NM_match'|'NM_unmatch'|'NM_tied'|'NM_N/A'|'NM_only'|'ambiguous'
+      - agreement_str: 'NM_match'|'NM_unmatch'|'NM_tied'|'NM_N/A'|'NM_only'|'refalt_unresolved'
 
     For indels (at least one allele is multi-base or empty):
       - NM comparison is primary determination.
       - Deletions (len(gref)>=1): genome fetch + ±10 bp refinement validates the Ref.
       - Insertions (gref=''): genome validation not applicable.
-      - agreement_str: 'NM_validated'|'NM_mismatch'|'NM_corrected'|'NM_N/A'|'ambiguous'
+      - agreement_str: 'NM_validated'|'NM_mismatch'|'NM_corrected'|'NM_N/A'|'refalt_unresolved'
 
     winning_allele: 'A', 'B', or None (probe_only)
     winning_ts    : alignment dict or None (probe_only)
@@ -831,7 +837,7 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
             nm_result = determine_ref_alt(winning_allele, winning_ts,
                                            ts_aligns, candidates_info)
         if nm_result is None:
-            return None, None, "ambiguous", final_pos
+            return None, None, "refalt_unresolved", final_pos
 
         ref_char, alt_char = nm_result
         gref = ref_char  # longer or non-empty allele
@@ -891,7 +897,7 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
     if nm_result is not None:
         return nm_result[0], nm_result[1], "NM_only", final_pos
 
-    return None, None, "ambiguous", final_pos
+    return None, None, "refalt_unresolved", final_pos
 
 
 # ── DECISION COUNTERS ─────────────────────────────────────────────────────────
@@ -916,17 +922,17 @@ class DecisionCounters:
     # no-valid-triple: TopSeq rescue path
     final_topseq_only:            int = 0
     topseq_rescue_failed_softclip: int = 0   # SNP target in soft-clipped region
-    topseq_rescue_failed_refalt:   int = 0   # NM tie unresolvable by ref lookup
+    topseq_rescue_refalt_unresolved: int = 0   # topseq_only winner with RefAlt=refalt_unresolved
     # no-valid-triple: probe rescue path
     final_probe_only:            int = 0
-    final_probe_rescue_ambiguous: int = 0    # probe locus ambiguous (tie=ambiguous)
-    probe_refalt_ambiguous:       int = 0    # probe Ref/Alt ambiguous (tie=*, RefAlt=ambiguous)
-    probe_rescue_unmapped:        int = 0    # probe rescue failed → unmapped (defensive; should be 0 for gp5)
-    topseq_ambiguous_no_probe_rescue: int = 0  # topseq locus ambiguous → no probe rescue
-    # ambiguous sub-totals by coordinate role (for Final Output nesting)
-    final_topseq_n_probe_ambiguous: int = 0  # position_ambiguous + ref_alt_nm_tie
-    final_topseq_only_ambiguous:    int = 0  # topseq_ambiguous_no_probe_rescue + topseq_rescue_failed_refalt
-    final_probe_only_ambiguous:     int = 0  # final_probe_rescue_ambiguous + probe_refalt_ambiguous
+    final_probe_rescue_locus_unresolved: int = 0  # probe locus unresolved (tie=locus_unresolved)
+    probe_rescue_refalt_unresolved:      int = 0  # probe Ref/Alt unresolved (tie=*, RefAlt=refalt_unresolved)
+    probe_rescue_unmapped:               int = 0  # probe rescue failed → unmapped (defensive; should be 0 for gp5)
+    topseq_locus_unresolved_no_probe_rescue: int = 0  # topseq locus unresolved → no probe rescue
+    # unresolved sub-totals by coordinate role (for Final Output nesting)
+    final_topseq_n_probe_unresolved: int = 0  # position_unresolved + refalt_unresolved_main
+    final_topseq_only_unresolved:    int = 0  # topseq_locus_unresolved_no_probe_rescue + topseq_rescue_refalt_unresolved
+    final_probe_only_unresolved:     int = 0  # final_probe_rescue_locus_unresolved + probe_rescue_refalt_unresolved
     # tie-resolution breakdown for successful rescues
     topseq_rescue_tie_unique:    int = 0
     topseq_rescue_tie_as:        int = 0
@@ -945,10 +951,10 @@ class DecisionCounters:
     nm_position_resolved:         int = 0   # tie=NM_resolved
     topseq_n_probe_tie_coorddelta: int = 0  # tie=CoordDelta_resolved
     scaffold_resolved:             int = 0  # tie=scaffold_resolved
-    position_ambiguous:            int = 0  # tie=ambiguous
+    position_unresolved:           int = 0  # tie=locus_unresolved
     # ref/alt determination
     ref_alt_ref_resolved:    int = 0
-    ref_alt_nm_tie:          int = 0
+    refalt_unresolved_main:  int = 0   # tie=unique|*_resolved + RefAlt=refalt_unresolved (topseq_n_probe main path)
     ref_base_mismatch:       int = 0
     strand_agreement_unexpected: int = 0   # StrandAgreementAsExpected == False
     # MAPQ distribution (topseq_n_probe winners only)
@@ -969,7 +975,7 @@ class DecisionCounters:
     final_scaffold_resolved:      int = 0
     final_nm_position_resolved:   int = 0
     final_unmapped:               int = 0
-    final_ambiguous:              int = 0
+    final_unresolved:             int = 0
 
     def format_summary(self, three_d=None) -> str:
         W = 60
@@ -986,7 +992,7 @@ class DecisionCounters:
         # Direct-counter fallback for the topseq_n_probe tie breakdown.
         # Used when three_d is None (e.g. unit tests that call format_summary directly).
         # In production three_d is always provided and gives Chr≠0-only counts;
-        # the fallback uses total-per-tie counters (includes any Chr=0 RefAlt=ambiguous).
+        # the fallback uses total-per-tie counters (includes any Chr=0 RefAlt=refalt_unresolved).
         _tnp_counter = {
             "unique":              self.unique_position,
             "AS_resolved":         self.topseq_n_probe_tie_as,
@@ -1005,10 +1011,10 @@ class DecisionCounters:
             return 0
 
         # \u2500\u2500 derived totals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        # mapq_total == topseq_n_probe Chr\u22600 == valid_pair_found - position_ambiguous - ref_alt_nm_tie
+        # mapq_total == topseq_n_probe Chr\u22600 == valid_pair_found - position_unresolved - refalt_unresolved_main
         mapq_total        = self.mapq_60 + self.mapq_30_59 + self.mapq_1_29 + self.mapq_0
-        topseq_only_total = self.final_topseq_only + self.final_topseq_only_ambiguous
-        probe_only_total  = self.final_probe_only  + self.final_probe_only_ambiguous
+        topseq_only_total = self.final_topseq_only + self.final_topseq_only_unresolved
+        probe_only_total  = self.final_probe_only  + self.final_probe_only_unresolved
         total_check       = (self.valid_pair_found + topseq_only_total
                              + probe_only_total + self.final_unmapped)
 
@@ -1032,8 +1038,8 @@ class DecisionCounters:
 
         # \u2500\u2500 topseq_n_probe branch \u2500\u2500
         row("\u22651 valid triple \u2192 anchor=topseq_n_probe:", self.valid_pair_found)
-        row("\u251c\u2500 tie=ambiguous \u2192 locus unresolvable (Chr=0):", self.position_ambiguous, indent=1)
-        row("\u251c\u2500 Ref/Alt=ambiguous \u2192 Ref/Alt unresolvable (Chr=0):", self.ref_alt_nm_tie, indent=1)
+        row("\u251c\u2500 tie=locus_unresolved (Chr=0):", self.position_unresolved, indent=1)
+        row("\u251c\u2500 Ref/Alt=refalt_unresolved (Chr=0):", self.refalt_unresolved_main, indent=1)
         row("\u2514\u2500 Ref/Alt assigned \u2192 topseq_n_probe (Chr\u22600):", mapq_total, indent=1)
         for _t in ("unique", "AS_resolved", "dAS_resolved", "NM_resolved",
                    "CoordDelta_resolved", "scaffold_resolved"):
@@ -1048,8 +1054,8 @@ class DecisionCounters:
         row("\u2502  tie=dAS_resolved:",      self.topseq_rescue_tie_das,      indent=3)
         row("\u2502  tie=NM_resolved:",       self.topseq_rescue_tie_nm,       indent=3)
         row("\u2502  tie=scaffold_resolved:", self.topseq_rescue_tie_scaffold,  indent=3)
-        row("\u251c\u2500 tie=unique|*_resolved + RefAlt=ambiguous (Chr=0):", self.topseq_rescue_failed_refalt, indent=2)
-        row("\u251c\u2500 tie=ambiguous \u2192 locus unresolvable (Chr=0):", self.topseq_ambiguous_no_probe_rescue, indent=2)
+        row("\u251c\u2500 tie=unique|*_resolved + RefAlt=refalt_unresolved (Chr=0):", self.topseq_rescue_refalt_unresolved, indent=2)
+        row("\u251c\u2500 tie=locus_unresolved (Chr=0):", self.topseq_locus_unresolved_no_probe_rescue, indent=2)
         row("\u2514\u2500 SNP in soft-clipped region \u2192 anchor=N/A (Chr=0):", self.topseq_rescue_failed_softclip, indent=2)
         lines.append("    Probe rescue (gp5, anchor=probe_only, coord=probe alignment):")
         row("\u251c\u2500 tie=unique|*_resolved \u2192 Ref/Alt assigned (Chr\u22600):", self.final_probe_only, indent=2)
@@ -1058,8 +1064,8 @@ class DecisionCounters:
         row("\u2502  tie=dAS_resolved:",      self.probe_rescue_tie_das,       indent=3)
         row("\u2502  tie=NM_resolved:",       self.probe_rescue_tie_nm,        indent=3)
         row("\u2502  tie=scaffold_resolved:", self.probe_rescue_tie_scaffold,   indent=3)
-        row("\u251c\u2500 tie=unique|*_resolved + RefAlt=ambiguous (Chr=0):", self.probe_refalt_ambiguous, indent=2)
-        row("\u2514\u2500 tie=ambiguous \u2192 locus unresolvable (Chr=0):", self.final_probe_rescue_ambiguous, indent=2)
+        row("\u251c\u2500 tie=unique|*_resolved + RefAlt=refalt_unresolved (Chr=0):", self.probe_rescue_refalt_unresolved, indent=2)
+        row("\u2514\u2500 tie=locus_unresolved (Chr=0):", self.final_probe_rescue_locus_unresolved, indent=2)
         lines.append("")
 
         # \u2500\u2500 Diagnostics \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -1068,8 +1074,8 @@ class DecisionCounters:
 
         hdr(f"Diagnostics (topseq_n_probe Chr\u22600: {mapq_total:,})")
         lines.append(
-            f"  = {self.valid_pair_found:,} total \u2212 {self.position_ambiguous:,} "
-            f"tie=ambiguous \u2212 {self.ref_alt_nm_tie:,} Ref/Alt=ambiguous"
+            f"  = {self.valid_pair_found:,} total \u2212 {self.position_unresolved:,} "
+            f"tie=locus_unresolved \u2212 {self.refalt_unresolved_main:,} Ref/Alt=refalt_unresolved"
         )
         lines.append("")
         lines.append("  MAPQ Distribution (min of winning TopSeq+probe pair):")
@@ -1100,13 +1106,13 @@ class DecisionCounters:
         if three_d is not None:
             ANCHOR_ORDER = ["topseq_n_probe", "topseq_only", "probe_only", "N/A"]
             TIE_ORDER    = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
-                            "CoordDelta_resolved", "scaffold_resolved", "ambiguous", "N/A"]
+                            "CoordDelta_resolved", "scaffold_resolved", "locus_unresolved", "N/A"]
 
             lines.append(
                 f"  {'anchor / tie':<28} {'NM_*(Chr\u22600)':>10}"
-                f" {'amb(Chr=0)':>10} {'N/A(Chr=0)':>10} {'Total':>8}"
+                f" {'unresolved(Chr=0)':>17} {'N/A(Chr=0)':>10} {'Total':>8}"
             )
-            lines.append("  " + "\u2500" * 66)
+            lines.append("  " + "\u2500" * 73)
 
             grand_nm = grand_amb = grand_na = 0
             for anchor in ANCHOR_ORDER:
@@ -1121,21 +1127,21 @@ class DecisionCounters:
                 for t in TIE_ORDER:
                     d  = three_d.get((anchor, t), {})
                     nm  = d.get("NM_*", 0)
-                    amb = d.get("ambiguous", 0)
+                    amb = d.get("refalt_unresolved", 0)
                     na  = d.get("N/A", 0)
                     row_total = nm + amb + na
                     if row_total == 0:
                         continue
                     lines.append(
-                        f"    tie={t:<24} {nm:>10,} {amb:>10,} {na:>10,} {row_total:>8,}"
+                        f"    tie={t:<24} {nm:>10,} {amb:>17,} {na:>10,} {row_total:>8,}"
                     )
                     grand_nm  += nm
                     grand_amb += amb
                     grand_na  += na
             grand_total = grand_nm + grand_amb + grand_na
-            lines.append("  " + "\u2500" * 66)
+            lines.append("  " + "\u2500" * 73)
             lines.append(
-                f"  {'Total':<28} {grand_nm:>10,} {grand_amb:>10,}"
+                f"  {'Total':<28} {grand_nm:>10,} {grand_amb:>17,}"
                 f" {grand_na:>10,} {grand_total:>8,}"
             )
         lines.append("")
@@ -1269,7 +1275,12 @@ def run_remapping(args):
         col_tie:          [],
         col_refalt_agree: [],
     }
-    ambiguous_rows = []
+    # Side-file row lists (one per anchor). Each row records an unresolved marker's
+    # competing-alignment detail. `UnresolvedReason` distinguishes locus-tie from
+    # refalt-tie inside each file.
+    tnp_unresolved_rows = []     # main path: topseq_n_probe
+    to_unresolved_rows  = []     # rescue path: topseq_only
+    po_unresolved_rows  = []     # rescue path: probe_only
     scaffold_rows  = []
     nm_pos_rows    = []
     counters       = DecisionCounters()
@@ -1348,14 +1359,14 @@ def run_remapping(args):
                 counters.valid_pair_found += 1
                 result = rank_and_resolve(triples, ts_aligns, pb_aligns,
                                            info, assay)
-                if result[0] == "ambiguous":
+                if result[0] == "locus_unresolved":
                     _, competing = result
-                    ambiguous_rows.extend({"Name": name, **r} for r in competing)
-                    _append_unmapped_cols("topseq_n_probe", "ambiguous")  # Case A
+                    tnp_unresolved_rows.extend({"Name": name, **r} for r in competing)
+                    _append_unmapped_cols("topseq_n_probe", "locus_unresolved")  # Case A
                     new_cols[col_align_status][-1] = align_status
-                    counters.position_ambiguous += 1
-                    counters.final_ambiguous += 1
-                    counters.final_topseq_n_probe_ambiguous += 1
+                    counters.position_unresolved += 1
+                    counters.final_unresolved += 1
+                    counters.final_topseq_n_probe_unresolved += 1
                     continue
 
                 tie_status     = result[0]
@@ -1384,9 +1395,9 @@ def run_remapping(args):
             else:
                 # No valid triples — try TopSeq rescue
                 counters.no_valid_pair += 1
-                best_allele, best_ts, ts_tie = best_topseq_rescue(ts_aligns)
+                best_allele, best_ts, ts_tie, ts_pool = best_topseq_rescue(ts_aligns)
 
-                if best_ts is not None and ts_tie != "ambiguous":
+                if best_ts is not None and ts_tie != "locus_unresolved":
                     # TopSeq-only: derive coordinate from CIGAR
                     target_idx = info["PreLen"] if best_ts["Strand"] == "+" else info["PostLen"]
                     cigar_coord, cigar_in_sc = parse_cigar_to_ref_pos(
@@ -1415,11 +1426,24 @@ def run_remapping(args):
                     )
                     if ref_alt_result[0] is None:
                         _append_unmapped_cols("topseq_only", ts_tie)  # Case D
-                        new_cols[col_refalt_agree][-1] = "ambiguous"
+                        new_cols[col_refalt_agree][-1] = "refalt_unresolved"
                         new_cols[col_align_status][-1] = align_status
-                        counters.topseq_rescue_failed_refalt += 1
-                        counters.final_ambiguous += 1
-                        counters.final_topseq_only_ambiguous += 1
+                        counters.topseq_rescue_refalt_unresolved += 1
+                        counters.final_unresolved += 1
+                        counters.final_topseq_only_unresolved += 1
+                        # Record the single winning alignment for the side file.
+                        to_unresolved_rows.append({
+                            "Name": name,
+                            "UnresolvedReason": "topseq_refalt_tie",
+                            "Rank": 1,
+                            "TopSeqAllele": best_allele,
+                            "Chr": best_ts["Chr"],
+                            "Pos": best_ts["Pos"],
+                            "Strand": best_ts["Strand"],
+                            "MAPQ": best_ts["MAPQ"],
+                            "NM": best_ts["NM"],
+                            "AS": best_ts.get("AS", -1),
+                        })
                         continue
 
                     ref_char, alt_char, refalt_agree, cigar_coord = ref_alt_result
@@ -1467,27 +1491,53 @@ def run_remapping(args):
                     continue
 
                 else:
-                    # If TopSeq aligned but was ambiguous, probe cannot do better.
-                    # best_topseq_rescue returns (None, None, "ambiguous") when TopSeq
-                    # has mapped alignments but they are unresolvable — best_ts is None
-                    # in that case, so we must check ts_tie as well.
-                    if best_ts is not None or ts_tie == "ambiguous":
-                        _append_unmapped_cols("topseq_only", "ambiguous")  # Case C
+                    # TopSeq aligned but tie-break failed → probe cannot disambiguate.
+                    # best_topseq_rescue returns (None, None, "locus_unresolved", pool)
+                    # when TopSeq alignments were mapped but unresolvable — best_ts is
+                    # None in that case, so check ts_tie as well.
+                    if best_ts is not None or ts_tie == "locus_unresolved":
+                        _append_unmapped_cols("topseq_only", "locus_unresolved")  # Case C
                         new_cols[col_align_status][-1] = align_status
-                        counters.topseq_ambiguous_no_probe_rescue += 1
-                        counters.final_ambiguous += 1
-                        counters.final_topseq_only_ambiguous += 1
+                        counters.topseq_locus_unresolved_no_probe_rescue += 1
+                        counters.final_unresolved += 1
+                        counters.final_topseq_only_unresolved += 1
+                        # Record competing-alignment detail from the locus-tie pool.
+                        for rank, (allele_lbl, a) in enumerate(ts_pool or [], 1):
+                            to_unresolved_rows.append({
+                                "Name": name,
+                                "UnresolvedReason": "topseq_locus_tie",
+                                "Rank": rank,
+                                "TopSeqAllele": allele_lbl,
+                                "Chr": a["Chr"],
+                                "Pos": a["Pos"],
+                                "Strand": a["Strand"],
+                                "MAPQ": a["MAPQ"],
+                                "NM": a["NM"],
+                                "AS": a.get("AS", -1),
+                            })
                         continue
 
                     # TopSeq produced no alignments (gp5) — try probe-only rescue
-                    best_pb, pb_tie = best_probe_rescue(pb_aligns)
+                    best_pb, pb_tie, pb_pool = best_probe_rescue(pb_aligns)
 
-                    if pb_tie == "ambiguous":
-                        _append_unmapped_cols("probe_only", "ambiguous")  # Case E
+                    if pb_tie == "locus_unresolved":
+                        _append_unmapped_cols("probe_only", "locus_unresolved")  # Case E
                         new_cols[col_align_status][-1] = align_status
-                        counters.final_probe_rescue_ambiguous += 1
-                        counters.final_ambiguous += 1
-                        counters.final_probe_only_ambiguous += 1
+                        counters.final_probe_rescue_locus_unresolved += 1
+                        counters.final_unresolved += 1
+                        counters.final_probe_only_unresolved += 1
+                        for rank, (_, a) in enumerate(pb_pool or [], 1):
+                            po_unresolved_rows.append({
+                                "Name": name,
+                                "UnresolvedReason": "probe_locus_tie",
+                                "Rank": rank,
+                                "Chr": a["Chr"],
+                                "Pos": a["Pos"],
+                                "Strand": a["Strand"],
+                                "MAPQ": a["MAPQ"],
+                                "NM": a["NM"],
+                                "AS": a.get("AS", -1),
+                            })
                         continue
 
                     if best_pb is None:  # no mapped probe alignments (tie="N/A")
@@ -1507,11 +1557,22 @@ def run_remapping(args):
                     )
                     if ref_alt_result[0] is None:
                         _append_unmapped_cols("probe_only", pb_tie)  # Case F
-                        new_cols[col_refalt_agree][-1] = "ambiguous"
+                        new_cols[col_refalt_agree][-1] = "refalt_unresolved"
                         new_cols[col_align_status][-1] = align_status
-                        counters.probe_refalt_ambiguous += 1
-                        counters.final_ambiguous += 1
-                        counters.final_probe_only_ambiguous += 1
+                        counters.probe_rescue_refalt_unresolved += 1
+                        counters.final_unresolved += 1
+                        counters.final_probe_only_unresolved += 1
+                        po_unresolved_rows.append({
+                            "Name": name,
+                            "UnresolvedReason": "probe_refalt_tie",
+                            "Rank": 1,
+                            "Chr": best_pb["Chr"],
+                            "Pos": best_pb["Pos"],
+                            "Strand": best_pb["Strand"],
+                            "MAPQ": best_pb["MAPQ"],
+                            "NM": best_pb["NM"],
+                            "AS": best_pb.get("AS", -1),
+                        })
                         continue
 
                     ref_char, alt_char, refalt_agree, pb_coord = ref_alt_result
@@ -1596,9 +1657,9 @@ def run_remapping(args):
                 fasta, winning_ts["Chr"], final_pos, winning_ts["Strand"]
             )
             if ref_alt_result[0] is None:
-                ambiguous_rows.append({
+                tnp_unresolved_rows.append({
                     "Name": name,
-                    "AmbiguityReason": "NM_and_genome_tie",
+                    "UnresolvedReason": "NM_and_genome_tie",
                     "PairRank": 1,
                     "TopSeqAllele": winning_allele,
                     "TopSeqChr": winning_ts["Chr"],
@@ -1612,11 +1673,11 @@ def run_remapping(args):
                     "MinMAPQ": min(winning_ts["MAPQ"], winning_pb["MAPQ"]),
                 })
                 _append_unmapped_cols("topseq_n_probe", tie_status)  # Case B
-                new_cols[col_refalt_agree][-1] = "ambiguous"
+                new_cols[col_refalt_agree][-1] = "refalt_unresolved"
                 new_cols[col_align_status][-1] = align_status
-                counters.ref_alt_nm_tie  += 1
-                counters.final_ambiguous += 1
-                counters.final_topseq_n_probe_ambiguous += 1
+                counters.refalt_unresolved_main += 1
+                counters.final_unresolved += 1
+                counters.final_topseq_n_probe_unresolved += 1
                 continue
 
             ref_char, alt_char, refalt_agree, final_pos = ref_alt_result
@@ -1699,10 +1760,18 @@ def run_remapping(args):
         print(f"[remap] Writing output: {args.output}")
         df.to_csv(args.output, index=False)
 
-        if ambiguous_rows:
-            amb_path = os.path.join(out_dir, "ambiguous_markers.csv")
-            pd.DataFrame(ambiguous_rows).to_csv(amb_path, index=False)
-            print(f"[remap] Ambiguous markers written to: {amb_path}")
+        # Three side-output files, one per anchor. Each file pools all unresolved
+        # markers for that path (locus-tie + RefAlt-tie); the UnresolvedReason
+        # column distinguishes them inside the file.
+        for label, rows in (
+            ("topseq_n_probe_unresolved_markers.csv", tnp_unresolved_rows),
+            ("topseq_only_unresolved_markers.csv",    to_unresolved_rows),
+            ("probe_only_unresolved_markers.csv",     po_unresolved_rows),
+        ):
+            if rows:
+                p = os.path.join(out_dir, label)
+                pd.DataFrame(rows).to_csv(p, index=False)
+                print(f"[remap] Unresolved markers written to: {p}")
 
         if scaffold_rows:
             scaf_path = os.path.join(out_dir, "scaffold_resolved_markers.csv")
@@ -1723,7 +1792,8 @@ def run_remapping(args):
             a  = new_cols[col_anchor][i]
             t  = new_cols[col_tie][i]
             r  = str(new_cols[col_refalt_agree][i])
-            rb = "NM_*" if r.startswith("NM_") else r   # "NM_*" / "ambiguous" / "N/A"
+            # Buckets: "NM_*" (resolved) / "refalt_unresolved" (Chr=0) / "N/A"
+            rb = "NM_*" if r.startswith("NM_") else r
             three_d[(a, t)][rb] += 1
 
         summary = counters.format_summary(three_d)

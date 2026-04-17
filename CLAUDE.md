@@ -38,13 +38,13 @@ Every marker gets exactly three orthogonal columns (after `-a equCab3`):
 
 - `anchor_equCab3` ∈ {`topseq_n_probe`, `topseq_only`, `probe_only`, `N/A`}
 - `tie_equCab3` ∈ {`unique`, `AS_resolved`, `dAS_resolved`, `NM_resolved`,
-  `CoordDelta_resolved`, `scaffold_resolved`, `ambiguous`, `N/A`}
+  `CoordDelta_resolved`, `scaffold_resolved`, `locus_unresolved`, `N/A`}
 - `RefAltMethodAgreement_equCab3` ∈ {`NM_match`, `NM_validated`, `NM_N/A`,
   `NM_tied`, `NM_only`, `NM_unmatch`, `NM_corrected`, `NM_mismatch`,
-  `ambiguous`, `N/A`}
+  `refalt_unresolved`, `N/A`}
 
 **Chr=0 rule:** marker is excluded from downstream iff `anchor=N/A` OR
-`tie=ambiguous` OR `RefAltMethodAgreement=ambiguous` (or
+`tie=locus_unresolved` OR `RefAltMethodAgreement=refalt_unresolved` (or
 `NM_mismatch` for indels via Stage 2 of QC).
 
 ## QC cascade (11 stages, all configurable)
