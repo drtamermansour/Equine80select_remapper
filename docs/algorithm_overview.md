@@ -164,12 +164,21 @@ For each placed marker, two methods run in parallel:
   [NM_comparison.md](NM_comparison.md).
 
 The genome result wins when it's available; otherwise NM is used. The
-agreement is recorded in `RefAltMethodAgreement_{assembly}`. See
-[output_formats.md](output_formats.md) for the full value list.
+agreement is recorded in `RefAltMethodAgreement_{assembly}`. The full set
+of values, with the variant type each applies to and what the value means:
 
-For deletions, the deletion sequence is also validated against the genome
-(`NM_validated` if found within ±10 bp; `NM_mismatch` if not) — the
-mismatched ones are removed by Stage 2 of the QC cascade.
+| Value | Applies to | Meaning |
+|---|---|---|
+| `NM_match` | SNP | Genome lookup and NM comparison both succeeded and agree. Highest-confidence Ref/Alt outcome. |
+| `NM_unmatch` | SNP | Both methods succeeded but disagree on which allele is Ref — genome result is used and recorded; worth inspecting for nearby variants that might have perturbed NM. |
+| `NM_tied` | SNP | Genome lookup succeeded; NM comparison produced a tie between alleles — the genome result is used. |
+| `NM_N/A` | SNP, Insertion | One method succeeded; the other was unavailable. **SNP:** genome succeeded but no TopSeq alignment was present, so NM couldn't be computed (every `probe_only` marker lands here). **Insertion:** NM assigned Ref/Alt; genome at the variant position was consulted to check for a Ref/Alt swap (see `NM_corrected` below) but it neither confirmed nor contradicted. |
+| `NM_only` | SNP | Genome lookup failed (e.g. base wasn't A/C/G/T); the NM result was used as a fallback. |
+| `NM_corrected` | Insertion | NM initially assigned Ref = empty string (so the inserted sequence was the Alt), but the genome base at `MapInfo` matched the inserted sequence — meaning the genome has that base, so it is Ref and the missing bases are the variant. Ref/Alt are swapped relative to the NM output. |
+| `NM_validated` | Deletion | NM determined which allele is the deleted sequence; the genome was fetched at `MapInfo` (with ±10 bp refinement) and the deletion sequence was confirmed present. High-confidence deletion. |
+| `NM_mismatch` | Deletion | NM assigned a deletion sequence but the genome at `MapInfo` does not contain that sequence — the marker is **removed** by Stage 2 of the QC cascade (design conflict filter). |
+| `refalt_unresolved` | SNP, Indel | Both methods failed (genome lookup and NM comparison could not determine which allele is Ref). The marker is forced to `Chr=0` and excluded. |
+| `N/A` | unmapped / locus-unresolved markers | Not applicable — the marker never reached Ref/Alt determination. |
 
 ---
 

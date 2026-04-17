@@ -90,10 +90,12 @@ appended. Column names embed the assembly label given via `-a` (e.g. `-a equCab3
 | `tie_{assembly}` | `unique` / `AS_resolved` / `dAS_resolved` / `NM_resolved` / `CoordDelta_resolved` / `scaffold_resolved` / `locus_unresolved` / `N/A` (how multi-locus ties were broken) |
 | `RefAltMethodAgreement_{assembly}` | `NM_match` / `NM_validated` / `NM_N/A` / `NM_tied` / `NM_only` / `NM_unmatch` / `NM_corrected` / `NM_mismatch` / `refalt_unresolved` / `N/A` (agreement between genome lookup and NM-based Ref/Alt determination) |
 
-For the meaning of each `RefAltMethodAgreement` value, see
-[NM_comparison.md](NM_comparison.md). For the per-marker decision flow that
-populates `anchor` / `tie`, see [algorithm_overview.md](algorithm_overview.md)
-and [decision_tree_simple.md](decision_tree_simple.md).
+For the meaning of each `RefAltMethodAgreement_{assembly}` value, see the
+table in [algorithm_overview.md § Ref/Alt determination](algorithm_overview.md#refalt-determination).
+For the per-marker decision flow that populates `anchor` / `tie`, see
+[algorithm_overview.md](algorithm_overview.md) and
+[decision_tree_simple.md](decision_tree_simple.md). Background on the NM
+comparison method itself lives in [NM_comparison.md](NM_comparison.md).
 
 ---
 
