@@ -517,8 +517,8 @@ def format_three_d_table(three_d):
         "═" * W,
         "3-Dimension Summary  (anchor × tie × Ref/Alt outcome)  — final markers",
         f"  {'anchor / tie':<28} {'NM_*(Chr≠0)':>10} {'unresolved(Chr=0)':>17}"
-        f" {'N/A(Chr=0)':>10} {'Total':>8}",
-        "  " + "─" * 76,
+        f" {'not_attempted(Chr=0)':>20} {'Total':>8}",
+        "  " + "─" * 86,
     ]
 
     grand = {"NM_*": 0, "refalt_unresolved": 0, "N/A": 0}
@@ -533,7 +533,7 @@ def format_three_d_table(three_d):
             if nm + amb + na == 0:
                 continue
             lines.append(
-                f"    tie={tie:<24} {nm:>10,} {amb:>17,} {na:>10,} {nm+amb+na:>8,}"
+                f"    tie={tie:<24} {nm:>10,} {amb:>17,} {na:>20,} {nm+amb+na:>8,}"
             )
             grand["NM_*"] += nm
             grand["refalt_unresolved"] += amb
@@ -541,9 +541,9 @@ def format_three_d_table(three_d):
 
     total = sum(grand.values())
     lines += [
-        "  " + "─" * 76,
+        "  " + "─" * 86,
         f"  {'Total':<28} {grand['NM_*']:>10,} {grand['refalt_unresolved']:>17,}"
-        f" {grand['N/A']:>10,} {total:>8,}",
+        f" {grand['N/A']:>20,} {total:>8,}",
     ]
     return "\n".join(lines)
 

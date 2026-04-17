@@ -1110,9 +1110,9 @@ class DecisionCounters:
 
             lines.append(
                 f"  {'anchor / tie':<28} {'NM_*(Chr\u22600)':>10}"
-                f" {'unresolved(Chr=0)':>17} {'N/A(Chr=0)':>10} {'Total':>8}"
+                f" {'unresolved(Chr=0)':>17} {'not_attempted(Chr=0)':>20} {'Total':>8}"
             )
-            lines.append("  " + "\u2500" * 73)
+            lines.append("  " + "\u2500" * 83)
 
             grand_nm = grand_amb = grand_na = 0
             for anchor in ANCHOR_ORDER:
@@ -1133,16 +1133,16 @@ class DecisionCounters:
                     if row_total == 0:
                         continue
                     lines.append(
-                        f"    tie={t:<24} {nm:>10,} {amb:>17,} {na:>10,} {row_total:>8,}"
+                        f"    tie={t:<24} {nm:>10,} {amb:>17,} {na:>20,} {row_total:>8,}"
                     )
                     grand_nm  += nm
                     grand_amb += amb
                     grand_na  += na
             grand_total = grand_nm + grand_amb + grand_na
-            lines.append("  " + "\u2500" * 73)
+            lines.append("  " + "\u2500" * 83)
             lines.append(
                 f"  {'Total':<28} {grand_nm:>10,} {grand_amb:>17,}"
-                f" {grand_na:>10,} {grand_total:>8,}"
+                f" {grand_na:>20,} {grand_total:>8,}"
             )
         lines.append("")
         return "\n".join(lines)
