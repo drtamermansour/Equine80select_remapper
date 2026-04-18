@@ -22,24 +22,24 @@ nrows=$((end_line - header_line - 1)); echo $nrows ## 81974
 
 ## 2. get the reference genomes
 ## equCab3:
-mkdir -p "$work_dir"/equCab3/download && cd "$work_dir"/equCab3/download
+mkdir -p "$work_dir"/genomes/equCab3/download && cd "$work_dir"/genomes/equCab3/download
 #wget --timestamping 'ftp://hgdownload.cse.ucsc.edu/goldenPath/equCab3/bigZips/equCab3.fa.gz' -O equCab3.fa.gz
 #gunzip equCab3.fa.gz
 ln -s $parentageDir/equCab3/download/equCab3.fa .
-cd "$work_dir"/equCab3
+cd "$work_dir"/genomes/equCab3
 sed 's/>chr/>/' download/equCab3.fa > equCab3_genome.fa
-equCab3_ref="$work_dir"/equCab3/equCab3_genome.fa
+equCab3_ref="$work_dir"/genomes/equCab3/equCab3_genome.fa
 cd "$work_dir"
 
 
 ## find likely alternative haplotypes among unplaced scafolds
 python scripts/scaffold_haplotype_analyzer.py \
-	-r equCab3/equCab3_genome.fa \
-	-o scaffold_haplotype_analysis
+	-r genomes/equCab3/equCab3_genome.fa \
+	-o genomes/equCab3_scaffold_haplotype_analysis
 
 python scripts/filter_scaffold_haplotypes.py \
-	-i scaffold_haplotype_analysis/scaffold_summary.tsv \
-	-o scaffold_haplotype_analysis/alt_haplotype_candidates.tsv \
+	-i genomes/equCab3_scaffold_haplotype_analysis/scaffold_summary.tsv \
+	-o genomes/equCab3_scaffold_haplotype_analysis/alt_haplotype_candidates.tsv \
 	--min-identity 90 --min-query-cov 80 --max-span-ratio 3 --min-mapq 30 --max-blocks 5    
 
 
@@ -54,7 +54,7 @@ python scripts/filter_scaffold_haplotypes.py \
 ## MAPQ_Probe: The Mapping Quality score of the selected probe alignment. If no valid probe overlap was found (fallback used), this is set to 0.
 bash run_pipeline.sh \
     --manifest manifests/Equine80select_24_20067593_B1.csv \
-    --reference equCab3/equCab3_genome.fa \
+    --reference genomes/equCab3/equCab3_genome.fa \
     --assembly equCab3 \
     --threads 64 \
     --keep-temp \
