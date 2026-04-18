@@ -79,9 +79,9 @@ def test_why_filtered_labels_define_eleven_stages():
     assert WHY_FILTERED_LABELS == [
         "stage_1_failed_markers",
         "stage_2_design_conflict",
-        "stage_3_coordinate_role",
-        "stage_4_tie_label",
-        "stage_5_refalt_conf",
+        "stage_3_min_anchor",
+        "stage_4_tie_policy",
+        "stage_5_min_refalt_confidence",
         "stage_6_mapq_topseq",
         "stage_7_mapq_probe",
         "stage_8_coord_delta",
@@ -128,26 +128,26 @@ def test_exclude_ambiguous_empty_df():
 def test_tag_removed_tags_markers_dropped_by_stage():
     """Markers in before-idx but not in after-idx receive the stage label."""
     why = pd.Series(["", "", "", ""], index=[0, 1, 2, 3])
-    _tag_removed(why, before_idx=[0, 1, 2, 3], after_idx=[0, 2], label="stage_3_coordinate_role")
-    assert why.tolist() == ["", "stage_3_coordinate_role", "", "stage_3_coordinate_role"]
+    _tag_removed(why, before_idx=[0, 1, 2, 3], after_idx=[0, 2], label="stage_3_min_anchor")
+    assert why.tolist() == ["", "stage_3_min_anchor", "", "stage_3_min_anchor"]
 
 
 def test_tag_removed_preserves_first_rejection_label():
     """A marker already labelled by an earlier stage keeps that label (first-rejection-wins)."""
     why = pd.Series(["stage_1_failed_markers", "", "", ""], index=[0, 1, 2, 3])
-    _tag_removed(why, before_idx=[0, 1, 2, 3], after_idx=[2], label="stage_3_coordinate_role")
+    _tag_removed(why, before_idx=[0, 1, 2, 3], after_idx=[2], label="stage_3_min_anchor")
     assert why.tolist() == [
         "stage_1_failed_markers",   # kept (set earlier)
-        "stage_3_coordinate_role",  # newly tagged
+        "stage_3_min_anchor",  # newly tagged
         "",                         # passed
-        "stage_3_coordinate_role",  # newly tagged
+        "stage_3_min_anchor",  # newly tagged
     ]
 
 
 def test_tag_removed_noop_when_nothing_removed():
     """If after-idx == before-idx, no labels are added."""
     why = pd.Series(["", "", ""], index=[0, 1, 2])
-    _tag_removed(why, before_idx=[0, 1, 2], after_idx=[0, 1, 2], label="stage_5_refalt_conf")
+    _tag_removed(why, before_idx=[0, 1, 2], after_idx=[0, 1, 2], label="stage_5_min_refalt_confidence")
     assert why.tolist() == ["", "", ""]
 
 

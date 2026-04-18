@@ -687,9 +687,9 @@ _TSV_COLS = [
 QC_STAGE_ORDER = [
     "stage_1_failed_markers",
     "stage_2_design_conflict",
-    "stage_3_coordinate_role",
-    "stage_4_tie_label",
-    "stage_5_refalt_conf",
+    "stage_3_min_anchor",
+    "stage_4_tie_policy",
+    "stage_5_min_refalt_confidence",
     "stage_6_mapq_topseq",
     "stage_7_mapq_probe",
     "stage_8_coord_delta",

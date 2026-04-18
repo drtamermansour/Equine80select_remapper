@@ -49,9 +49,9 @@ from _strand_utils import strand_normalize, complement
 WHY_FILTERED_LABELS = [
     "stage_1_failed_markers",
     "stage_2_design_conflict",
-    "stage_3_coordinate_role",
-    "stage_4_tie_label",
-    "stage_5_refalt_conf",
+    "stage_3_min_anchor",
+    "stage_4_tie_policy",
+    "stage_5_min_refalt_confidence",
     "stage_6_mapq_topseq",
     "stage_7_mapq_probe",
     "stage_8_coord_delta",
@@ -767,7 +767,7 @@ def run_qc(args):
     else:
         print(f"[qc] WARNING: {col_anchor!r} column not found. Skipping min-anchor filter.")
         df_coord_role = df_noconflict
-    _tag_removed(why_filtered, df_noconflict.index, df_coord_role.index, "stage_3_coordinate_role")
+    _tag_removed(why_filtered, df_noconflict.index, df_coord_role.index, "stage_3_min_anchor")
     qc_stats[f"After min-anchor ({args.min_anchor})"] = len(df_coord_role)
 
     # ── Stage 4: Tie policy ──────────────────────────────────────────────────
@@ -779,7 +779,7 @@ def run_qc(args):
     else:
         print(f"[qc] WARNING: {col_tie!r} column not found. Skipping tie-policy filter.")
         df_tie = df_coord_role
-    _tag_removed(why_filtered, df_coord_role.index, df_tie.index, "stage_4_tie_label")
+    _tag_removed(why_filtered, df_coord_role.index, df_tie.index, "stage_4_tie_policy")
     qc_stats[f"After tie-policy ({args.tie_policy})"] = len(df_tie)
 
     # ── Stage 5: Min-refalt-confidence ───────────────────────────────────────
@@ -790,7 +790,7 @@ def run_qc(args):
     else:
         print(f"[qc] WARNING: {col_refalt_agree!r} column not found. Skipping min-refalt-confidence filter.")
         df_refalt = df_tie
-    _tag_removed(why_filtered, df_tie.index, df_refalt.index, "stage_5_refalt_conf")
+    _tag_removed(why_filtered, df_tie.index, df_refalt.index, "stage_5_min_refalt_confidence")
     qc_stats[f"After min-refalt-confidence ({args.min_refalt_confidence})"] = len(df_refalt)
 
     # ── Stage 6: MAPQ_TopGenomicSeq (probe_only exempt via NaN) ──────────────

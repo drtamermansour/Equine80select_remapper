@@ -54,9 +54,9 @@ records the **first** rejection per marker:
 
 1. `stage_1_failed_markers` — `Strand=N/A` (always on)
 2. `stage_2_design_conflict` — Ref ≠ genome ref / `NM_mismatch` (always on)
-3. `stage_3_coordinate_role` — `--min-anchor` (`dual`/`topseq`/`probe`) [flag renamed; internal stage label kept for trace-CSV compatibility]
-4. `stage_4_tie_label` — `--tie-policy` (`unique`/`resolved`/`avoid_scaffolds`) [flag renamed; stage label kept]
-5. `stage_5_refalt_conf` — `--min-refalt-confidence` (`high`/`moderate`/`low`) [flag renamed; stage label kept]
+3. `stage_3_min_anchor` — `--min-anchor` (`dual`/`topseq`/`probe`)
+4. `stage_4_tie_policy` — `--tie-policy` (`unique`/`resolved`/`avoid_scaffolds`)
+5. `stage_5_min_refalt_confidence` — `--min-refalt-confidence` (`high`/`moderate`/`low`)
 6. `stage_6_mapq_topseq` — `--min-mapq-topseq 30` (probe_only NaN-exempt; pass `off` to disable)
 7. `stage_7_mapq_probe` — `--min-mapq-probe off` default (topseq_only NaN-exempt)
 8. `stage_8_coord_delta` — `--max-coord-delta off` default

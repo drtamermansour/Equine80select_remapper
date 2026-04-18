@@ -353,8 +353,8 @@ def _impact_fixture():
     return pd.DataFrame({
         "Name":         [f"m{i}" for i in range(8)],
         "why_filtered": ["", "", "", "",
-                         "stage_5_refalt_conf", "stage_5_refalt_conf",
-                         "stage_5_refalt_conf", "stage_10_polymorphic"],
+                         "stage_5_min_refalt_confidence", "stage_5_min_refalt_confidence",
+                         "stage_5_min_refalt_confidence", "stage_10_polymorphic"],
         "result":       ["correct", "correct", "correct", "coord_off",
                          "correct", "correct",
                          "coord_off", "unmapped"],
@@ -372,7 +372,7 @@ def test_compute_qc_impact_per_stage_precision():
     impact = compute_qc_impact(_impact_fixture())
     per_stage = dict((s, (n, nc, pct)) for s, n, nc, pct in impact["per_stage"])
     # stage_5: 3 removed, 1 non-correct (the coord_off one) → precision 33.3%
-    assert per_stage["stage_5_refalt_conf"] == pytest.approx((3, 1, 33.333333), abs=0.01)
+    assert per_stage["stage_5_min_refalt_confidence"] == pytest.approx((3, 1, 33.333333), abs=0.01)
     # stage_10: 1 removed, 1 non-correct → precision 100%
     assert per_stage["stage_10_polymorphic"] == pytest.approx((1, 1, 100.0), abs=0.01)
 
