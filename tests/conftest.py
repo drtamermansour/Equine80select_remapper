@@ -1,6 +1,12 @@
 import sys, os
+import glob
+import re
 import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_REMAPPED_NAME_RE = re.compile(r"^(?P<prefix>.+)_remapped_(?P<assembly>[^/]+)\.csv$")
 
 
 def pytest_addoption(parser):
@@ -23,3 +29,52 @@ def results_dir(request):
     if not os.path.isdir(d):
         pytest.fail(f"--results-dir '{d}' does not exist or is not a directory.")
     return d
+
+
+@pytest.fixture(scope="session")
+def remapped_csv(results_dir):
+    """Path to the single `{prefix}_remapped_{assembly}.csv` inside results_dir/remapping/."""
+    pattern = os.path.join(results_dir, "remapping", "*_remapped_*.csv")
+    matches = [m for m in glob.glob(pattern) if not m.endswith("_traced.csv")]
+    if len(matches) == 0:
+        pytest.fail(
+            f"No '*_remapped_*.csv' found under {os.path.join(results_dir, 'remapping')}. "
+            "Run run_pipeline.sh first."
+        )
+    if len(matches) > 1:
+        pytest.fail(
+            f"Ambiguous remapped CSV in {os.path.join(results_dir, 'remapping')}: "
+            f"expected exactly one '*_remapped_*.csv', got {len(matches)}: {matches}"
+        )
+    return matches[0]
+
+
+def _parse_remapped_name(path):
+    m = _REMAPPED_NAME_RE.match(os.path.basename(path))
+    if not m:
+        pytest.fail(
+            f"Remapped CSV filename {path!r} does not match "
+            "expected '{prefix}_remapped_{assembly}.csv' pattern."
+        )
+    return m.group("prefix"), m.group("assembly")
+
+
+@pytest.fixture(scope="session")
+def assembly_label(remapped_csv):
+    """Assembly tag embedded in the remapped CSV filename (e.g. 'equCab3', 'canFam3')."""
+    _, assembly = _parse_remapped_name(remapped_csv)
+    return assembly
+
+
+@pytest.fixture(scope="session")
+def manifest_path(remapped_csv):
+    """Absolute path to the source Illumina manifest in backup_original/."""
+    prefix, _ = _parse_remapped_name(remapped_csv)
+    path = os.path.join(REPO_ROOT, "backup_original", f"{prefix}.csv")
+    if not os.path.isfile(path):
+        pytest.fail(
+            f"Expected manifest not found: {path!r}. "
+            f"Derived prefix {prefix!r} from {os.path.basename(remapped_csv)!r}; "
+            "ensure the original manifest is present in backup_original/."
+        )
+    return path

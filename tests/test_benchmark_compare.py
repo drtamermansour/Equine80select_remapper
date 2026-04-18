@@ -771,15 +771,14 @@ def test_write_report_omits_coord_delta_section_when_column_absent(tmp_path):
 import subprocess
 
 
-def test_integration_runs_without_error(tmp_path, results_dir):
+def test_integration_runs_without_error(tmp_path, manifest_path, remapped_csv, assembly_label):
     """Smoke test: run the script against real data and check output files exist."""
     result = subprocess.run(
         [
             "python", "scripts/benchmark_compare.py",
-            "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
-            "--remapped",   os.path.join(results_dir, "remapping",
-                            "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv"),
-            "--assembly",   "equCab3",
+            "--manifest",   manifest_path,
+            "--remapped",   remapped_csv,
+            "--assembly",   assembly_label,
             "--output-dir", str(tmp_path),
         ],
         cwd="/home/tahmed/Equine80select_remapper",
@@ -796,15 +795,14 @@ def test_integration_runs_without_error(tmp_path, results_dir):
     assert any("report" in f for f in files), f"Report missing. Files: {files}"
 
 
-def test_integration_correct_count(tmp_path, results_dir):
-    """Correct marker count should be well above 80,000 for the current run."""
+def test_integration_correct_count(tmp_path, manifest_path, remapped_csv, assembly_label):
+    """At least 90% of evaluated markers should be classified 'correct'."""
     subprocess.run(
         [
             "python", "scripts/benchmark_compare.py",
-            "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
-            "--remapped",   os.path.join(results_dir, "remapping",
-                            "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv"),
-            "--assembly",   "equCab3",
+            "--manifest",   manifest_path,
+            "--remapped",   remapped_csv,
+            "--assembly",   assembly_label,
             "--output-dir", str(tmp_path),
         ],
         cwd="/home/tahmed/Equine80select_remapper",
@@ -814,7 +812,9 @@ def test_integration_correct_count(tmp_path, results_dir):
                  if f.endswith(".tsv") and "chrY" not in f and "chr0" not in f]
     df = pd.read_csv(os.path.join(tmp_path, tsv_files[0]), sep="\t")
     correct_count = (df["result"] == "correct").sum()
-    assert correct_count > 80_000, f"Expected >80k correct, got {correct_count}"
+    total = len(df)
+    assert correct_count > 0.9 * total, \
+        f"Expected >90% correct ({0.9 * total:.0f}); got {correct_count}/{total}"
 
 
 # ── write_diff ────────────────────────────────────────────────────────────────
@@ -838,19 +838,17 @@ def test_write_diff_creates_file(tmp_path):
     assert "correct" in content
 
 
-def test_integration_baseline_produces_diff_file(tmp_path, results_dir):
+def test_integration_baseline_produces_diff_file(tmp_path, manifest_path, remapped_csv, assembly_label):
     """When --baseline is provided, a _diff.txt file is created alongside the report."""
     run1 = tmp_path / "run1"
     run1.mkdir()
-    remapped_csv = os.path.join(results_dir, "remapping",
-                   "Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3.csv")
     # First run — produces baseline TSV
     subprocess.run(
         [
             "python", "scripts/benchmark_compare.py",
-            "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
+            "--manifest",   manifest_path,
             "--remapped",   remapped_csv,
-            "--assembly",   "equCab3",
+            "--assembly",   assembly_label,
             "--output-dir", str(run1),
         ],
         cwd="/home/tahmed/Equine80select_remapper",
@@ -866,9 +864,9 @@ def test_integration_baseline_produces_diff_file(tmp_path, results_dir):
     subprocess.run(
         [
             "python", "scripts/benchmark_compare.py",
-            "--manifest",   "backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv",
+            "--manifest",   manifest_path,
             "--remapped",   remapped_csv,
-            "--assembly",   "equCab3",
+            "--assembly",   assembly_label,
             "--output-dir", str(run2),
             "--baseline",   baseline_tsv,
         ],
