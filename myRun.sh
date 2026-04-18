@@ -13,11 +13,11 @@ conda activate remap
 parentageDir=$HOME/Horse_parentage_SNPs
 
 # 1. Get the input manifest
-mkdir -p backup_original
-cp $parentageDir/backup_original/Equine80select_24_20067593_B1.csv backup_original/.
-origManifest="$work_dir"/backup_original/Equine80select_24_20067593_B1.csv
-header_line=$(grep -n "^IlmnID" backup_original/Equine80select_24_20067593_B1.csv | cut -d":" -f1)
-end_line=$(grep -n "^\[Controls]" backup_original/Equine80select_24_20067593_B1.csv | cut -d":" -f1)
+mkdir -p manifests
+cp $parentageDir/backup_original/Equine80select_24_20067593_B1.csv manifests/.
+origManifest="$work_dir"/manifests/Equine80select_24_20067593_B1.csv
+header_line=$(grep -n "^IlmnID" manifests/Equine80select_24_20067593_B1.csv | cut -d":" -f1)
+end_line=$(grep -n "^\[Controls]" manifests/Equine80select_24_20067593_B1.csv | cut -d":" -f1)
 nrows=$((end_line - header_line - 1)); echo $nrows ## 81974
 
 ## 2. get the reference genomes
@@ -53,7 +53,7 @@ python scripts/filter_scaffold_haplotypes.py \
 ## MAPQ_TopGenomicSeq: Mapping Quality score directly from the minimap2 alignment of the winning TopGenomicSeq candidate.
 ## MAPQ_Probe: The Mapping Quality score of the selected probe alignment. If no valid probe overlap was found (fallback used), this is set to 0.
 bash run_pipeline.sh \
-    --manifest backup_original/Equine80select_24_20067593_B1.csv \
+    --manifest manifests/Equine80select_24_20067593_B1.csv \
     --reference equCab3/equCab3_genome.fa \
     --assembly equCab3 \
     --threads 64 \

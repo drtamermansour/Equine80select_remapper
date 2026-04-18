@@ -5,7 +5,6 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _REMAPPED_NAME_RE = re.compile(r"^(?P<prefix>.+)_remapped_(?P<assembly>[^/]+)\.csv$")
 
 
@@ -15,6 +14,13 @@ def pytest_addoption(parser):
         default=None,
         help="Root path of the pipeline output directory. "
              "Integration tests search the 'remapping/' and 'qc/' subdirectories automatically.",
+    )
+    parser.addoption(
+        "--manifest",
+        default=None,
+        help="Path to the source Illumina manifest CSV that was fed to run_pipeline.sh. "
+             "Required by integration tests; the pipeline does not persist this path in "
+             "the results directory.",
     )
 
 
@@ -67,14 +73,14 @@ def assembly_label(remapped_csv):
 
 
 @pytest.fixture(scope="session")
-def manifest_path(remapped_csv):
-    """Absolute path to the source Illumina manifest in backup_original/."""
-    prefix, _ = _parse_remapped_name(remapped_csv)
-    path = os.path.join(REPO_ROOT, "backup_original", f"{prefix}.csv")
-    if not os.path.isfile(path):
+def manifest_path(request):
+    """Absolute path to the source Illumina manifest CSV (from --manifest)."""
+    p = request.config.getoption("--manifest")
+    if p is None:
         pytest.fail(
-            f"Expected manifest not found: {path!r}. "
-            f"Derived prefix {prefix!r} from {os.path.basename(remapped_csv)!r}; "
-            "ensure the original manifest is present in backup_original/."
+            "Integration tests require --manifest. "
+            "Run pytest with: --manifest <path-to-source-manifest.csv>"
         )
-    return path
+    if not os.path.isfile(p):
+        pytest.fail(f"--manifest '{p}' does not exist or is not a file.")
+    return os.path.abspath(p)

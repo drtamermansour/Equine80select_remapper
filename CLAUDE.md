@@ -152,4 +152,6 @@ manipulation).
 - `temp/` and `ignore/` — historical scripts and superseded plans.
 - Any file under `ignore/superpowers/` — past brainstorm/plan artifacts.
 - `my-session.txt` — historical session log.
-- `backup_original/` — original Illumina manifests; do not modify.
+- Any user-chosen input directory for Illumina manifests (historically
+  `backup_original/`, now `manifests/` in this checkout) — treat as read-only
+  user inputs; the path is whatever `-i` the user passed to `run_pipeline.sh`.

@@ -133,15 +133,18 @@ pytest tests/ -v -k "not integration"
 
 Full suite including the three benchmark-integration tests (require a real
 pipeline output directory — typically the `results/` folder from an earlier
-run):
+run — plus the source Illumina manifest that was fed to the pipeline):
 
 ```bash
-pytest tests/ -v --results-dir /path/to/results
+pytest tests/ -v \
+    --results-dir /path/to/results \
+    --manifest    /path/to/source_manifest.csv
 ```
 
-Without `--results-dir`, running the full suite will error out on the three
-integration tests in `tests/test_benchmark_compare.py` with a clear
-"Integration tests require --results-dir" message.
+Without these flags, the three integration tests in
+`tests/test_benchmark_compare.py` fail fast with a clear
+"Integration tests require --results-dir" / "require --manifest" message;
+the 292 unit tests run regardless.
 
 ---
 

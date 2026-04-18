@@ -34,7 +34,7 @@
 #
 # Example:
 #   bash run_pipeline.sh \
-#       -i backup_original/Equine80select_24_20067593_B1.csv \
+#       -i manifests/Equine80select_24_20067593_B1.csv \
 #       -r equCab3/equCab3_genome.fa \
 #       -a equCab3 \
 #       -o results/ \

@@ -23,11 +23,11 @@ mkdir -p Equine80select_remapper && cd Equine80select_remapper
 work_dir=$(pwd)
 parentageDir=$work_dir/../Horse_parentage_SNPs
 
-mkdir -p backup_original
-cp $parentageDir/backup_original/Equine80select_24_20067593_B1.csv backup_original/.
-origManifest="$work_dir"/backup_original/Equine80select_24_20067593_B1.csv
-header_line=$(grep -n "^IlmnID" backup_original/Equine80select_24_20067593_B1.csv | cut -d":" -f1)
-end_line=$(grep -n "^\[Controls]" backup_original/Equine80select_24_20067593_B1.csv | cut -d":" -f1)
+mkdir -p manifests
+cp $parentageDir/backup_original/Equine80select_24_20067593_B1.csv manifests/.
+origManifest="$work_dir"/manifests/Equine80select_24_20067593_B1.csv
+header_line=$(grep -n "^IlmnID" manifests/Equine80select_24_20067593_B1.csv | cut -d":" -f1)
+end_line=$(grep -n "^\[Controls]" manifests/Equine80select_24_20067593_B1.csv | cut -d":" -f1)
 nrows=$((end_line - header_line - 1)); echo $nrows ## 81974
 
 ## get the reference genomes

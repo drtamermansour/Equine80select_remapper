@@ -5,7 +5,7 @@ EquCab3-native Illumina manifest. Produces per-marker TSVs and a summary report.
 
 Usage:
     python scripts/benchmark_compare.py \
-        --manifest  backup_original/Equine80select_v2_1_HTS_20143333_B1_UCD.csv \
+        --manifest  manifests/Equine80select_v2_1_HTS_20143333_B1_UCD.csv \
         --remapped  results_E80selv2_to_equCab3/..._remapped_equCab3.csv \
         --assembly  equCab3 \
         [--output-dir results_E80selv2_to_equCab3/benchmark/] \
