@@ -94,15 +94,31 @@ For `topseq_n_probe` markers, two coordinates are computed independently:
 position is recorded in `MapInfo_{assembly}` and the source in
 `CoordSource_{assembly}`:
 
-| `CoordDelta` | Final source (`CoordSource`) | Why |
-|---|---|---|
-| `0` | `probe_cigar` | Both agree |
-| `1` | `probe_cigar` | Small drift; probe slightly more precise at delta = 1 |
-| `≥ 2` | `topseq_cigar` | Larger discrepancy; TopSeq CIGAR empirically wins |
-| `−1` (CIGAR unavailable, e.g. soft-clipped variant) | `probe_cigar` | TopSeq CIGAR couldn't reach the variant base |
+Selection rule (applied in order):
 
-**Indel markers always use `topseq_cigar`** regardless of `CoordDelta` — the
-probe coordinate is not precise enough for indels.
+| `is_indel` | `CoordDelta` | TopSeq CIGAR near `target_idx` | `CoordSource` |
+|---|---|---|---|
+| True | any | any | `topseq_cigar` |
+| False | −1 (SNP in TopSeq soft clip) | n/a | `probe_cigar` |
+| False | ≥ 2 | has I/D within 5 bp | `probe_cigar` |
+| False | ≥ 2 | clean | `topseq_cigar` |
+| False | 0 or 1 | any | `probe_cigar` |
+
+Equivalently: a `topseq_n_probe` marker uses `probe_cigar` **unless** it
+is an indel or has `CoordDelta ≥ 2` with a clean TopSeq CIGAR, in which
+case it uses `topseq_cigar`.
+
+The "I/D within 5 bp of target_idx" branch accounts for minimap2 gap-
+placement ambiguity: when the reference has a few extra or fewer bases in
+a homopolymer or short tandem repeat flanking the SNP, minimap2 inserts a
+small indel in the TopSeq CIGAR and left-aligns it by default. The CIGAR
+walk inherits that left-aligned placement, which can shift the CIGAR-
+derived SNP coordinate by the indel size. In these cases the probe-
+derived coordinate (anchored by the probe's short, clean alignment) is
+preferred — but it is reported under the unified `probe_cigar` label.
+
+**Indel markers always use `topseq_cigar`** regardless of `CoordDelta` —
+the probe coordinate is not precise enough for indels.
 
 For background on CIGAR walking, see [CIGAR_walk.md](CIGAR_walk.md).
 

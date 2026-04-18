@@ -33,6 +33,7 @@ from benchmark_compare import (
     _fmt,
     detect_assembly,
 )
+from remap_manifest import extract_candidates
 
 
 def parse_args():
@@ -85,12 +86,19 @@ def load_remapped_three_coords(path: str, assembly: str) -> pd.DataFrame:
                 f"current-schema columns (including anchor_{assembly} + tie_{assembly})."
             )
 
+    # TopGenomicSeq is needed to derive is_indel via extract_candidates;
+    # match the pipeline's definition (len(AlleleA) != 1 or len(AlleleB) != 1
+    # after "-" → "" normalisation).
+    use_cols = ["Name", col_chr, col_pos_final, col_pos_probe, col_pos_cigar,
+                col_strand, col_probe_strand, col_delta, col_source,
+                col_anchor, col_tie]
+    if "TopGenomicSeq" in header.columns:
+        use_cols.append("TopGenomicSeq")
+
     df = pd.read_csv(
         path,
         dtype={col_chr: str},
-        usecols=["Name", col_chr, col_pos_final, col_pos_probe, col_pos_cigar,
-                 col_strand, col_probe_strand, col_delta, col_source,
-                 col_anchor, col_tie],
+        usecols=use_cols,
         low_memory=False,
     )
 
@@ -110,6 +118,20 @@ def load_remapped_three_coords(path: str, assembly: str) -> pd.DataFrame:
         return "mapped"
     df["status"] = df.apply(_derive_status, axis=1)
     df = df.drop(columns=[col_anchor, col_tie])
+
+    # Derive is_indel using the same convention as remap_manifest.run_remapping
+    # (extract_candidates normalises "-" → ""; then any allele with len != 1
+    # is an indel).
+    if "TopGenomicSeq" in df.columns:
+        def _is_indel(ts):
+            _, a, b, _ = extract_candidates(ts) if isinstance(ts, str) else (None, None, None, None)
+            if a is None:
+                return False
+            return len(a) != 1 or len(b) != 1
+        df["is_indel"] = df["TopGenomicSeq"].apply(_is_indel)
+        df = df.drop(columns=["TopGenomicSeq"])
+    else:
+        df["is_indel"] = False
 
     df = df.rename(columns={
         col_chr:          "chr",
@@ -178,9 +200,22 @@ def print_comparison(dfs_labels, total):
 
 
 def print_delta_stratification(probe_df, cigar_df, final_df, remapped_df, main_df):
-    """Show accuracy of each coord source broken down by CoordDelta bucket."""
+    """Show accuracy of each coord source broken down by CoordDelta bucket.
+
+    For each bucket prints three rows — total, SNV-only, indel-only — to make
+    the per-source contribution to `final correct` reconcilable. The fifth
+    column ('predicted') is derived per-marker from the `coord_source` chosen
+    by the pipeline's selection cascade:
+       coord_source == probe_cigar   → use probe result
+       coord_source == topseq_cigar  → use CIGAR result
+    Any drift between 'predicted' and 'final correct' attributes to
+    post-decision adjustments (deletion minus-strand correction at
+    remap_manifest.py:1729-1733, or final_pos shifts in determine_ref_alt_v2).
+    """
     merged = main_df.merge(remapped_df, on="Name", how="left")
-    merged["coord_delta"] = merged["coord_delta"].fillna(-1).astype(int)
+    merged["coord_delta"]  = merged["coord_delta"].fillna(-1).astype(int)
+    merged["is_indel"]     = merged["is_indel"].fillna(False).astype(bool)
+    merged["coord_source"] = merged["coord_source"].fillna("N/A")
 
     probe_by_name = probe_df.set_index("Name")["result"]
     cigar_by_name = cigar_df.set_index("Name")["result"]
@@ -203,25 +238,62 @@ def print_delta_stratification(probe_df, cigar_df, final_df, remapped_df, main_d
         ("delta = -1",   delta == -1),
     ]
 
-    col_w = 22
-    print(f"  {'bucket':<14}  {'N':>6}"
-          f"  {'probe correct':>{col_w}}"
-          f"  {'CIGAR correct':>{col_w}}"
-          f"  {'final correct':>{col_w}}")
-    print("  " + "-" * (14 + 6 + (col_w + 2) * 3 + 6))
+    # "probe_cigar_indel_rescue" is a legacy label (pre-simplification) that
+    # was unified into "probe_cigar". Accept it here so benchmarks can still
+    # run against remapped CSVs generated before the rename. Safe to drop
+    # once all in-use CSVs are regenerated.
+    PROBE_SOURCES = {"probe_cigar", "probe_cigar_indel_rescue"}
 
-    for label, mask in buckets:
-        names = merged.loc[mask, "Name"]
+    def _counts(names):
         n = len(names)
         if n == 0:
+            return None
+        sub = merged[merged["Name"].isin(names)]
+        sources       = sub.set_index("Name")["coord_source"]
+        probe_results = probe_by_name.reindex(names)
+        cigar_results = cigar_by_name.reindex(names)
+        final_results = final_by_name.reindex(names)
+        # Predicted = probe-result for markers whose coord_source is probe-based,
+        # cigar-result for the rest. Mirrors what the cascade rule selects.
+        is_probe_src  = sources.reindex(names).isin(PROBE_SOURCES)
+        predicted     = probe_results.where(is_probe_src, cigar_results)
+        return {
+            "n":         n,
+            "probe":     (probe_results == "correct").sum(),
+            "cigar":     (cigar_results == "correct").sum(),
+            "final":     (final_results == "correct").sum(),
+            "predicted": (predicted     == "correct").sum(),
+        }
+
+    col_w = 18
+    label_w = 16
+    print(f"  {'bucket':<{label_w}}  {'N':>6}"
+          f"  {'probe correct':>{col_w}}"
+          f"  {'CIGAR correct':>{col_w}}"
+          f"  {'final correct':>{col_w}}"
+          f"  {'predicted':>{col_w}}")
+    print("  " + "-" * (label_w + 6 + (col_w + 2) * 4 + 6))
+
+    def _row(label, c, indent=0):
+        if c is None:
+            return
+        prefix = "  " * indent + label
+        print(f"  {prefix:<{label_w}}  {c['n']:>6,}"
+              f"  {_fmt(c['probe'],     c['n']):>{col_w}}"
+              f"  {_fmt(c['cigar'],     c['n']):>{col_w}}"
+              f"  {_fmt(c['final'],     c['n']):>{col_w}}"
+              f"  {_fmt(c['predicted'], c['n']):>{col_w}}")
+
+    for label, mask in buckets:
+        all_names   = merged.loc[mask, "Name"]
+        if len(all_names) == 0:
             continue
-        n_probe = (probe_by_name.reindex(names) == "correct").sum()
-        n_cigar = (cigar_by_name.reindex(names) == "correct").sum()
-        n_final = (final_by_name.reindex(names) == "correct").sum()
-        print(f"  {label:<14}  {n:>6,}"
-              f"  {_fmt(n_probe, n):>{col_w}}"
-              f"  {_fmt(n_cigar, n):>{col_w}}"
-              f"  {_fmt(n_final, n):>{col_w}}")
+        snv_names   = merged.loc[mask & (~merged["is_indel"]), "Name"]
+        indel_names = merged.loc[mask &   merged["is_indel"],  "Name"]
+
+        _row(label,   _counts(all_names))
+        _row("SNV",   _counts(snv_names),   indent=1)
+        _row("indel", _counts(indel_names), indent=1)
     print()
 
 

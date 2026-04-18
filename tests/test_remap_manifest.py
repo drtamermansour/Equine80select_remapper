@@ -10,6 +10,8 @@ from remap_manifest import (
     compute_qcov,
     compute_soft_clip_frac,
     parse_cigar_to_ref_pos,
+    cigar_has_indel_near_query_idx,
+    get_probe_coordinate,
     is_placed_chromosome,
     _make_competing_rows,
     determine_ref_alt,
@@ -116,6 +118,191 @@ def test_cigar_ref_pos_minus_strand_postlen_index():
     pos, in_sc = parse_cigar_to_ref_pos(1000, "150M", 5)
     assert pos == 1005
     assert in_sc is False
+
+
+# ── cigar_has_indel_near_query_idx ────────────────────────────────────────────
+# Detects minimap2 gap-placement ambiguity near the SNP in the TopSeq CIGAR.
+# When an I/D op sits within `window` bp of target_idx in query space, the
+# CIGAR-derived reference coordinate is unreliable (the aligner could have
+# placed the gap at an equivalent alternative position).
+
+def test_indel_near_no_indel():
+    """All-match CIGAR → no indel to find."""
+    assert cigar_has_indel_near_query_idx("50M", 25, window=5) is None
+
+
+def test_indel_near_d_at_boundary():
+    """2D at query boundary (distance 0) — mirrors BIEC2_20280."""
+    assert cigar_has_indel_near_query_idx("200M2D201M", 200, window=5) == ("D", 2, 0)
+
+
+def test_indel_near_d_inside_window():
+    """2D at q=198 with target=200 → distance 2; trailing 1D at q=358 is far — closest wins.
+    Mirrors BIEC2_1143564."""
+    assert cigar_has_indel_near_query_idx("198M2D160M1D43M", 200, window=5) == ("D", 2, 2)
+
+
+def test_indel_near_d_distance_4():
+    """2D at q=196, target=200 → distance 4, within window=5 — mirrors BIEC2_62056."""
+    assert cigar_has_indel_near_query_idx("196M2D205M", 200, window=5) == ("D", 2, 4)
+
+
+def test_indel_near_outside_window():
+    """2D at q=100, target=200 → distance 100, outside window → None."""
+    assert cigar_has_indel_near_query_idx("100M2D300M", 200, window=5) is None
+
+
+def test_indel_near_insertion_inside_span():
+    """5I spans q=100..104; target=102 inside the insertion span → distance 0."""
+    assert cigar_has_indel_near_query_idx("100M5I95M", 102, window=5) == ("I", 5, 0)
+
+
+def test_indel_near_multi_indel_closest_wins():
+    """2D at q=190 (distance 10, outside window); 3D at q=200 (distance 0) — return 3D."""
+    assert cigar_has_indel_near_query_idx("190M2D10M3D200M", 200, window=5) == ("D", 3, 0)
+
+
+def test_indel_near_insertion_boundary_distance():
+    """1I spans q=195..196; target=198 → min(|198-195|, |198-196|) = 2."""
+    assert cigar_has_indel_near_query_idx("195M1I210M", 198, window=5) == ("I", 1, 2)
+
+
+def test_indel_near_respects_window_parameter():
+    """Same CIGAR/target, window=3 excludes the distance-4 indel that window=5 admitted."""
+    assert cigar_has_indel_near_query_idx("196M2D205M", 200, window=5) == ("D", 2, 4)
+    assert cigar_has_indel_near_query_idx("196M2D205M", 200, window=3) is None
+
+
+# ── get_probe_coordinate — soft-clip bug regression tests ────────────────────
+# Soft-clipped bases do NOT consume reference. Plus-strand `ref_span` must
+# exclude S from its sum; the minus-strand branch already handles leading S
+# correctly via `pos_start - leading_s`.
+
+def test_probe_coord_plus_strand_clean_50m_inf_ii():
+    """Baseline: plus strand 50M, Inf II → SNP is base after probe 3' end."""
+    assert get_probe_coordinate(100, "50M", "+", "II") == 150
+
+
+def test_probe_coord_plus_strand_clean_50m_inf_i():
+    """Baseline: plus strand 50M, Inf I → SNP AT probe 3' end."""
+    assert get_probe_coordinate(100, "50M", "+", "I") == 149
+
+
+def test_probe_coord_plus_strand_leading_softclip_inf_ii():
+    """Plus strand 2S48M, Inf II: aligned region is 48 bp (q=2..49).
+    SAM pos (=100) already points at the first aligned base, so the probe's 3' end
+    is at pos+47; the Inf II SNP is pos+48. Soft clips must not inflate ref_span."""
+    assert get_probe_coordinate(100, "2S48M", "+", "II") == 148
+
+
+def test_probe_coord_plus_strand_trailing_softclip_inf_ii():
+    """Plus strand 48M2S, Inf II: trailing soft clip at the probe's 3' end.
+    Aligned region is 48 bp; probe 3' end of aligned region is at pos+47;
+    Inf II SNP is pos+48."""
+    assert get_probe_coordinate(100, "48M2S", "+", "II") == 148
+
+
+def test_probe_coord_plus_strand_deletion_inf_ii():
+    """Plus strand 48M2D2M, Inf II: D consumes reference, so ref_span = 48+2+2 = 52.
+    Probe 3' end at pos+51; Inf II SNP = pos+52. Deletions DO count; this must
+    remain unchanged by the soft-clip fix."""
+    assert get_probe_coordinate(100, "48M2D2M", "+", "II") == 152
+
+
+def test_probe_coord_minus_strand_leading_softclip_inf_ii():
+    """Minus strand 2S48M, Inf II: leading S in SAM = trailing (3') in original probe.
+    probe_end = pos - leading_s = 100 - 2 = 98; Inf II SNP = 98 - 1 = 97.
+    Minus-strand branch is already correct; keep as regression test."""
+    assert get_probe_coordinate(100, "2S48M", "-", "II") == 97
+
+
+def test_probe_coord_minus_strand_clean_50m_inf_ii():
+    """Baseline: minus strand 50M, Inf II → probe_end = pos = 100; SNP = 99."""
+    assert get_probe_coordinate(100, "50M", "-", "II") == 99
+
+
+# ── CoordSource indel-adjacency rescue (integration contract) ────────────────
+# Contract tests for the CoordSource selection cascade. The cascade is inline
+# in run_remapping (scripts/remap_manifest.py around line 1645); these tests
+# encode the expected branch ordering and outcomes.
+
+def test_cigar_indel_rescue_snv_with_topseq_indel_near_target():
+    """SNV marker, CoordDelta=2, TopSeq CIGAR has 2D within 5 bp of target_idx.
+    Mirrors BIEC2_1143564 failure mode — rule must use probe_cigar (rescue
+    path collapsed into the unified probe_cigar label).
+    """
+    is_indel = False
+    cigar_in_sc = False
+    cigar_str = "198M2D160M1D43M"
+    target_idx = 200
+    cigar_coord = 1202
+    c_pos = 1200
+    coord_delta_val = abs(c_pos - cigar_coord)
+    assert coord_delta_val == 2
+
+    # Expected cascade
+    if is_indel:
+        final_pos, coord_source = cigar_coord, "topseq_cigar"
+    elif coord_delta_val >= 2:
+        indel_near = cigar_has_indel_near_query_idx(cigar_str, target_idx, window=5)
+        if indel_near is not None:
+            final_pos, coord_source = c_pos, "probe_cigar"
+        else:
+            final_pos, coord_source = cigar_coord, "topseq_cigar"
+    else:
+        final_pos, coord_source = c_pos, "probe_cigar"
+
+    assert coord_source == "probe_cigar"
+    assert final_pos == c_pos
+
+
+def test_cigar_no_rescue_when_topseq_clean():
+    """SNV marker, CoordDelta=2, TopSeq CIGAR clean (no indel near target).
+    Existing rule preserved: use topseq_cigar."""
+    is_indel = False
+    cigar_str = "401M"
+    target_idx = 200
+    cigar_coord = 1202
+    c_pos = 1200
+    coord_delta_val = abs(c_pos - cigar_coord)
+
+    if is_indel:
+        final_pos, coord_source = cigar_coord, "topseq_cigar"
+    elif coord_delta_val >= 2:
+        indel_near = cigar_has_indel_near_query_idx(cigar_str, target_idx, window=5)
+        if indel_near is not None:
+            final_pos, coord_source = c_pos, "probe_cigar"
+        else:
+            final_pos, coord_source = cigar_coord, "topseq_cigar"
+    else:
+        final_pos, coord_source = c_pos, "probe_cigar"
+
+    assert coord_source == "topseq_cigar"
+    assert final_pos == cigar_coord
+
+
+def test_cigar_indel_branch_precedes_rescue():
+    """Indel markers still route to topseq_cigar even with TopSeq indel near target.
+    The is_indel branch runs BEFORE the delta branch; rescue must not capture indels."""
+    is_indel = True
+    cigar_str = "100M8D92M"   # indel marker with adjacent D — mirrors PRKDC_SCID
+    target_idx = 100
+    cigar_coord = 1050
+    c_pos = 1048
+
+    if is_indel:
+        final_pos, coord_source = cigar_coord, "topseq_cigar"
+    elif abs(c_pos - cigar_coord) >= 2:
+        indel_near = cigar_has_indel_near_query_idx(cigar_str, target_idx, window=5)
+        if indel_near is not None:
+            final_pos, coord_source = c_pos, "probe_cigar"
+        else:
+            final_pos, coord_source = cigar_coord, "topseq_cigar"
+    else:
+        final_pos, coord_source = c_pos, "probe_cigar"
+
+    assert coord_source == "topseq_cigar"
+    assert final_pos == cigar_coord
 
 
 # ── Alignment dict helpers ────────────────────────────────────────────────────

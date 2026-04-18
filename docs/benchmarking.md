@@ -62,7 +62,9 @@ This produces a verdict explaining *who* is wrong:
 |---|---|
 | `manifest_strand_wrong` | Pipeline placed the marker correctly; manifest's `RefStrand` disagrees with the actual reference orientation. |
 | `manifest_coord_wrong` | Pipeline coord differs from manifest's, but context matches at *our* coord — manifest is stale. |
-| `pipeline_wrong_locus` | Context fails at our coord — we placed the marker on the wrong locus. |
+| `pipeline_wrong_locus` | Pipeline placed the marker on the **right chromosome** but context fails at our coord — we picked the wrong position within that chromosome. |
+| `pipeline_wrong_chr` | Pipeline placed the marker on the **wrong chromosome**; context can't match by construction. |
+| `pipeline_unmapped` | Pipeline assigned no position (`Chr=0` / `Strand=N/A`). Not a "wrong locus" — no locus at all. |
 | `pipeline_wrong_strand` | Context matches in *reverse* orientation; we placed the right locus but flipped the strand. |
 | `ambiguous_snp` | A/T or C/G SNP — strand is undetermined from alleles alone. |
 | `probe_only_inconclusive` | Known-weak class; segregated to keep noise out of the headline. |

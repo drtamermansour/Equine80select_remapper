@@ -237,6 +237,46 @@ def parse_cigar_to_ref_pos(start_pos: int, cigar: str, query_index: int):
     return curr_r, False
 
 
+def cigar_has_indel_near_query_idx(cigar: str, target_q: int,
+                                   window: int = 5):
+    """
+    Scan CIGAR in query space; return (op, n, distance) for the I/D op
+    whose query boundary lies closest to target_q within `window` bp, or
+    None if no I/D is close enough.
+
+    Used to detect minimap2 gap-placement ambiguity near the SNP: when an
+    indel sits in a homopolymer or short tandem repeat flanking target_q,
+    the aligner could have placed it at an equivalent alternative position,
+    so the CIGAR-derived reference coordinate is unreliable for SNV markers.
+
+    Strand-agnostic — caller supplies target_q = PreLen (+) or PostLen (−),
+    matching the convention used by parse_cigar_to_ref_pos.
+    """
+    ops = _parse_cigar(cigar)
+    curr_q = 0
+    best = None                          # (distance, op, n)
+    for n, op in ops:
+        if op in "M=X":
+            curr_q += n
+        elif op == "I":
+            if curr_q <= target_q <= curr_q + n:
+                dist = 0
+            else:
+                dist = min(abs(target_q - curr_q),
+                           abs(target_q - (curr_q + n)))
+            if dist <= window and (best is None or dist < best[0]):
+                best = (dist, op, n)
+            curr_q += n
+        elif op == "D":
+            dist = abs(target_q - curr_q)
+            if dist <= window and (best is None or dist < best[0]):
+                best = (dist, op, n)
+        elif op == "S":
+            curr_q += n
+        # N: reference-only skip, no query advance; not relevant here.
+    return None if best is None else (best[1], best[2], best[0])
+
+
 def get_probe_coordinate(pos_start, cigar_str, strand, assay_type):
     """
     Calculates the variant start coordinate from a probe alignment.
@@ -250,7 +290,8 @@ def get_probe_coordinate(pos_start, cigar_str, strand, assay_type):
     ops = _parse_cigar(cigar_str)
 
     if strand == "+":
-        ref_span = sum(n for n, op in ops if op in "MDN=XS")
+        # Soft clips do not consume reference, so they must not inflate ref_span.
+        ref_span = sum(n for n, op in ops if op in "MDN=X")
         probe_end = pos_start + ref_span - 1
         return probe_end + 1 if assay_type == "II" else probe_end
     else:
@@ -1642,10 +1683,29 @@ def run_remapping(args):
                     counters.coord_delta_1 += 1
                 else:
                     counters.coord_delta_ge2 += 1
-                if is_indel or coord_delta_val >= 2:
+                if is_indel:
                     final_pos    = cigar_coord
                     coord_source = "topseq_cigar"
                     counters.coord_source_cigar += 1
+                elif coord_delta_val >= 2:
+                    # TopSeq CIGAR indel within 5 bp of target_idx → minimap2
+                    # placed a gap in a homopolymer/tandem-repeat context near
+                    # the SNP (already left-aligned; the "correct" placement
+                    # per the probe is the right-aligned version). The CIGAR
+                    # walk inherits the left-aligned position and returns a
+                    # coordinate shifted by the indel size, so defer to the
+                    # probe-derived coordinate instead.
+                    indel_near = cigar_has_indel_near_query_idx(
+                        winning_ts["Cigar"], target_idx, window=5
+                    )
+                    if indel_near is not None:
+                        final_pos    = c_pos
+                        coord_source = "probe_cigar"
+                        counters.coord_source_probe += 1
+                    else:
+                        final_pos    = cigar_coord
+                        coord_source = "topseq_cigar"
+                        counters.coord_source_cigar += 1
                 else:
                     final_pos    = c_pos
                     coord_source = "probe_cigar"

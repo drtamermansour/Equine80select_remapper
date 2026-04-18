@@ -195,7 +195,15 @@ def classify_explanatory(row) -> str:
 
     Expected keys in *row*: context_forward, context_reverse, manifest_strand,
     remapped_strand, coord_ok, is_ambiguous_snp, is_probe_only, is_indel,
-    deletion_seq_ok, insertion_absent.
+    deletion_seq_ok, insertion_absent, result.
+
+    The "no context match either strand" branch splits three ways based on
+    the top-level `result` classification so the verdict names describe
+    what actually happened:
+      - result == "unmapped"   → pipeline_unmapped   (no position assigned)
+      - result == "wrong_chr"  → pipeline_wrong_chr  (placed on wrong chromosome)
+      - otherwise              → pipeline_wrong_locus (placed on right chromosome,
+                                                       but position's context fails)
     """
     fwd         = bool(row.get("context_forward"))
     rev         = bool(row.get("context_reverse"))
@@ -204,6 +212,7 @@ def classify_explanatory(row) -> str:
     r_strand    = row.get("remapped_strand")
     is_amb      = bool(row.get("is_ambiguous_snp"))
     is_po       = bool(row.get("is_probe_only"))
+    result      = row.get("result", "")
 
     if is_amb and fwd:
         return "ambiguous_snp"
@@ -216,6 +225,10 @@ def classify_explanatory(row) -> str:
     if not fwd and not rev:
         if is_po:
             return "probe_only_inconclusive"
+        if result == "unmapped":
+            return "pipeline_unmapped"
+        if result == "wrong_chr":
+            return "pipeline_wrong_chr"
         return "pipeline_wrong_locus"
     return "unresolved"
 
@@ -636,6 +649,7 @@ def _add_explanatory_signals(merged: pd.DataFrame, fasta, flank_len: int) -> Non
                 "is_indel": (ts_parsed is not None and (ts_parsed[1] == "" or ts_parsed[2] == "")),
                 "deletion_seq_ok": dso,
                 "insertion_absent": ia,
+                "result": result,
             }
             verdicts.append(classify_explanatory(v_row))
 

@@ -250,15 +250,45 @@ def test_classify_explanatory_manifest_strand_wrong():
 
 
 def test_classify_explanatory_pipeline_wrong_locus():
-    """Context fails at remapped MapInfo → pipeline_wrong_locus."""
+    """Placed on right chromosome but context fails at the remapped position
+    → pipeline_wrong_locus. This is the canonical `result=="coord_off"` case."""
     row = {
         "context_forward": False, "context_reverse": False,
         "remapped_strand": "+", "manifest_strand": "+",
-        "coord_ok": True, "is_ambiguous_snp": False, "is_probe_only": False,
+        "coord_ok": False, "is_ambiguous_snp": False, "is_probe_only": False,
         "is_indel": False,
         "deletion_seq_ok": None, "insertion_absent": None,
+        "result": "coord_off",
     }
     assert classify_explanatory(row) == "pipeline_wrong_locus"
+
+
+def test_classify_explanatory_pipeline_unmapped():
+    """No position assigned (result=='unmapped') → pipeline_unmapped verdict,
+    not pipeline_wrong_locus."""
+    row = {
+        "context_forward": False, "context_reverse": False,
+        "remapped_strand": "N/A", "manifest_strand": "+",
+        "coord_ok": False, "is_ambiguous_snp": False, "is_probe_only": False,
+        "is_indel": False,
+        "deletion_seq_ok": None, "insertion_absent": None,
+        "result": "unmapped",
+    }
+    assert classify_explanatory(row) == "pipeline_unmapped"
+
+
+def test_classify_explanatory_pipeline_wrong_chr():
+    """Placed on wrong chromosome (result=='wrong_chr') → pipeline_wrong_chr,
+    not pipeline_wrong_locus (which implies same chromosome)."""
+    row = {
+        "context_forward": False, "context_reverse": False,
+        "remapped_strand": "+", "manifest_strand": "+",
+        "coord_ok": False, "is_ambiguous_snp": False, "is_probe_only": False,
+        "is_indel": False,
+        "deletion_seq_ok": None, "insertion_absent": None,
+        "result": "wrong_chr",
+    }
+    assert classify_explanatory(row) == "pipeline_wrong_chr"
 
 
 def test_classify_explanatory_pipeline_wrong_strand():

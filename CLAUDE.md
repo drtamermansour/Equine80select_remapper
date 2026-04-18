@@ -77,9 +77,23 @@ Two CIGAR-derived coordinates per `topseq_n_probe` marker:
 - `CoordSource_{a}` ∈ {`"probe_cigar"`, `"topseq_cigar"`, `"N/A"`} — which
   one ended up in `MapInfo_{a}`.
 
-Rule: indels OR `CoordDelta ≥ 2` → use `topseq_cigar`. Otherwise → `probe_cigar`.
-`CoordDelta = -1` (soft clip) → `probe_cigar`. Empirical accuracy:
-probe_cigar 98.0%, topseq_cigar 98.6%, final 98.7%.
+Rule (applied in order, `run_remapping`):
+1. `cigar_in_sc` (SNP in TopSeq soft clip) → `probe_cigar`.
+2. `is_indel` → `topseq_cigar` (probe isn't precise enough for indels).
+3. `CoordDelta ≥ 2` AND TopSeq CIGAR has an I/D within 5 bp of
+   `target_idx` in query space → `probe_cigar` (gap-placement ambiguity
+   in homopolymer/tandem-repeat contexts; minimap2 left-aligns the gap,
+   the CIGAR walk inherits the shifted coordinate, so defer to the
+   probe-derived coordinate).
+4. `CoordDelta ≥ 2` with clean TopSeq CIGAR → `topseq_cigar`.
+5. Otherwise → `probe_cigar`.
+
+One-liner: *a `topseq_n_probe` marker uses `probe_cigar` unless the
+marker is an indel or `CoordDelta ≥ 2` with a clean TopSeq CIGAR, in
+which case it uses `topseq_cigar`.*
+
+Empirical accuracy (pre-rescue): probe_cigar 98.0%, topseq_cigar 98.6%,
+final 98.7%.
 
 ## Critical invariants & pitfalls
 

@@ -41,17 +41,12 @@ For deletion markers, NM comparison and the deletion validation are answering fu
   Summary
 
 
-  ┌─────────────────────────────┬──────────────────────────────────────────────────┬───────────────────────────────────────────────────────┐
-  │                             │                  NM comparison                   │                  Deletion validation                  │
-  ├─────────────────────────────┼──────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
-  │ Question                    │ Which allele fits better?                        │ Does gref literally exist at this exact coordinate?   │
-  ├─────────────────────────────┼──────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
-  │ Method                      │ Relative (lower-NM allele wins)                  │ Absolute (exact sequence match)                       │
-  ├─────────────────────────────┼──────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
-  │ Sensitivity to small errors │ Low — distributed across whole alignment         │ High — any single mismatch or ±1 bp coord error fails │
-  ├─────────────────────────────┼──────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
-  │ Can succeed even when...    │ sequence has evolved, coordinate is slightly off │ ...it cannot                                          │
-  └─────────────────────────────┴──────────────────────────────────────────────────┴───────────────────────────────────────────────────────┘
+|                                 | NM comparison                                    | Deletion validation                                   |
+|---------------------------------|--------------------------------------------------|-------------------------------------------------------|
+| **Question**                    | Which allele fits better?                        | Does `gref` literally exist at this exact coordinate? |
+| **Method**                      | Relative (lower-NM allele wins)                  | Absolute (exact sequence match)                       |
+| **Sensitivity to small errors** | Low — distributed across whole alignment         | High — any single mismatch or ±1 bp coord error fails |
+| **Can succeed even when...**    | sequence has evolved, coordinate is slightly off | ...it cannot                                          |
 
   For the 5 Category 1 markers (1-bp deletions), NM is right and the coordinate is right — the CIGAR walk just returned position P+1 instead of P, so the validation byte-matched at the wrong spot. The probe coordinate has the correct position.
 

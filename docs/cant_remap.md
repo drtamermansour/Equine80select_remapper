@@ -1,7 +1,7 @@
 # Why Some Markers Can't Be Re-mapped (Or Shouldn't Be)
 
-Out of 82,222 benchmarked markers in the v2 manifest → EquCab3 run, **268 of
-the 279 non-correct markers cannot be fixed by a pipeline change**. This
+Out of 82,222 benchmarked markers in the v2 manifest → EquCab3 run, **258 of
+the 269 non-correct markers cannot be fixed by a pipeline change**. This
 document explains each bucket and why a fix is either impossible or inadvisable.
 
 The remaining 11 non-correct markers are cases where the *manifest* is wrong,
@@ -20,7 +20,7 @@ Four categories emerge from which positions match:
 | Category | @ our pos | @ manifest pos | Count | Interpretation |
 |---|---|---|---|---|
 | `we_right_manifest_wrong` | ✓ | ✗ | 11 | Manifest is stale — see `why_we_right.md` |
-| `pipeline_wrong_manifest_right` | ✗ | ✓ | 55 | We placed wrong or refused; manifest coord is correct |
+| `pipeline_wrong_manifest_right` | ✗ | ✓ | 45 | We placed wrong or refused; manifest coord is correct |
 | `both_match_duplicate_locus` | ✓ | ✓ | 44 | Both positions exist in the reference — duplicate/alt-haplotype region |
 | `neither_matches` | ✗ | ✗ | 169 | Reference has diverged from manifest; no match either way |
 
@@ -68,7 +68,7 @@ Breakdown by alignment/decision state:
 
 ---
 
-## 55 — `pipeline_wrong_manifest_right`: low-confidence refusals at correct loci
+## 45 — `pipeline_wrong_manifest_right`: low-confidence refusals at correct loci
 
 The context DOES match at the manifest's position, but our pipeline put the
 marker somewhere else or refused to place it. These are places where our
@@ -80,8 +80,12 @@ Breakdown:
 |---|---|---|---|---|
 | `unmapped` | topseq_n_probe | unique | `refalt_unresolved` | 46 |
 | `unmapped` | topseq_only | locus_unresolved | — | 1 |
-| `coord_off` | topseq_n_probe | — | — | 6 |
 | `wrong_chr` | topseq_n_probe/topseq_only | — | — | 2 |
+
+*(An additional ~6 `coord_off topseq_n_probe` markers previously sat in
+this bucket; those were the 2-bp CoordDelta drift cases now rescued by
+the indel-adjacency selection rule — see the commentary at the end of
+this section.)*
 
 **The 47 `unmapped + refalt_unresolved` markers (dominant case):**
 
@@ -100,23 +104,28 @@ correctly.
 Fixing the 47 would mean relaxing the RefAlt-ambiguity rule, which
 trades accuracy for coverage. That's a QC decision, not a bug.
 
-**The 8 `coord_off` / `wrong_chr` cases:**
+**The residual `wrong_chr` cases:**
 
 These are places where our ranking (AS_sum → ΔAS_sum → NM_sum →
 CoordDelta → scaffold) preferred a different locus over the manifest's
-correct one. Examples:
+correct one. Example:
 
 | Marker | Manifest | Our remap | Δ | Issue |
 |---|---|---|---|---|
-| `BIEC2_429398` | chr19:14,606,357 | chr19:14,606,355 | -2 | `CoordDelta=2` → CIGAR coord chosen over probe |
-| `BIEC2_62056` | chr1:143,439,440 | chr1:143,439,442 | +2 | `CoordDelta=2` → CIGAR coord chosen over probe |
 | `BIEC2_186500` | chr12:13,575,382 | chr12:13,284,912 | -290 kb | `topseq_only` rescue found a competing locus |
 
-The 2-bp `CoordDelta=2` cases represent an interesting trade-off: our
-`CoordDelta ≥ 2 → prefer CIGAR` heuristic is correct on average (benchmark
-shows final 98.7% vs probe-alone 98.0%), but individual markers can be
-better served by the probe coordinate. Changing the rule would regress
-accuracy on the majority to fix a tiny minority.
+**Previously in this bucket — now rescued:** a subset of 2-bp
+`CoordDelta=2` (and similar small-delta) SNV markers — e.g.
+`BIEC2_429398`, `BIEC2_62056`, `BIEC2_20280`, `BIEC2_1143564` — used to
+live here. The selection rule previously was "`CoordDelta ≥ 2` → prefer
+CIGAR", which was correct on average (final 98.7% vs probe-alone 98.0%)
+but wrong for a small subset of SNVs whose TopSeq CIGARs had minimap2
+gaps placed ambiguously in flanking repeats. The cascade now detects
+this signature (TopSeq I/D within 5 bp of `target_idx`) and routes those
+markers to `probe_cigar` without affecting the majority. Ten markers
+across delta buckets 2, 3, 4, and 10 moved from `pipeline_wrong_manifest_right`
+to `correct`; empirical regression risk for SNVs was zero (no
+TopSeq-correct SNVs carried a nearby I/D).
 
 ---
 
@@ -177,11 +186,11 @@ coordinates round-trip to each other.
 
 Of 82,222 benchmarked markers:
 
-- **81,943 (99.7%) correct** — full agreement on coordinate, strand, alleles.
-- **279 non-correct:** 
+- **81,953 (99.7%) correct** — full agreement on coordinate, strand, alleles.
+- **269 non-correct:** 
   - 11 the manifest is wrong, we're right (`docs/why_we_right.md`).
   - 47 MAPQ=0 multi-mappers at the right locus but refused by the RefAlt-ambiguity filter (by design).
-  - 8 placement errors in the wrong-vs-right-coord sense (mostly 2-bp drift from our CoordSource heuristic; mostly within the design trade-off).
+  - ~2 residual placement errors (`topseq_only` rescue picking a wrong locus); the small-delta CoordSource-heuristic cases were rescued by the indel-adjacency selection rule (see the 45-case section).
   - 44 ambiguous duplicate loci (pre-pipeline alt-haplotype scaffold removal can help 22 of these).
   - 169 fundamental reference-sequence divergence — the DNA that the manifest describes no longer exists in the EquCab3 reference.
 
