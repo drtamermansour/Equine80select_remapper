@@ -89,9 +89,10 @@ The most useful flags. See [docs/cli_reference.md](docs/cli_reference.md) for ev
 | Flag | Default | What it does |
 |---|---|---|
 | `-t / --threads` | `4` | Threads for minimap2 (use more on HPC) |
-| `--coordinate-role` | `Moderate` | How permissive to be about which markers count: `High` (strictest), `Moderate`, or `Low` (most permissive) |
-| `--keep-indels` | off | By default, indel markers are dropped from the final map. Pass this to keep them. |
-| `--keep-ambiguous` | off | By default, A/T and C/G SNPs are dropped (their alleles can't tell strand apart). Pass this to keep them. |
+| `--preset` | none | One-knob strictness: `strict` / `default` / `permissive`. Tunes the strictness + threshold + include/exclude flags as a bundle; individual flags override. |
+| `--min-anchor` | `topseq` | How permissive to be about which markers count: `dual` (strictest — `topseq_n_probe` only), `topseq` (also `topseq_only`), `probe` (most permissive — also `probe_only`) |
+| `--include-indels` | off | By default, indel markers are dropped from the final outputs. Pass this to keep them. |
+| `--include-ambiguous-snps` | off | By default, A/T and C/G SNPs are dropped (their alleles can't tell strand apart). Pass this to keep them. |
 | `--resume` | off | Skip realignment if it has already been done — useful when iterating on filter settings. |
 
 ---

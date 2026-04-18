@@ -58,7 +58,7 @@ bash run_pipeline.sh \
     --assembly equCab3 \
     --threads 64 \
     --keep-temp \
-    --mapq-topseq 1 \
+    --min-mapq-topseq 1 \
     --resume \
     --output-dir results_E80selv1_to_equCab3/
 

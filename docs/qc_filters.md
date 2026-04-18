@@ -12,32 +12,35 @@ trace CSV records the *first* filter that rejected each marker.
 |---|---|---|---|---|
 | 1 | Failed markers | Markers that couldn't be placed (`Strand` is `N/A`, meaning unmapped or locus_unresolved) | always on | — |
 | 2 | Design conflict | SNPs whose Ref allele doesn't match the reference base, and deletions whose Ref sequence isn't in the genome | always on | — |
-| 3 | Coordinate role | Markers placed by less-trusted evidence | filter at `Moderate` (allows `topseq_n_probe` + `topseq_only`) | `--coordinate-role High`/`Low` |
-| 4 | Tie label | Markers whose locus required certain tie-break steps (e.g. picking a placed chromosome over a scaffold) | filter at `resolved` (rejects `scaffold_resolved` and `locus_unresolved`) | `--tie-label unique`/`avoid_scaffolds` |
-| 5 | Ref/Alt confidence | Markers where the Ref/Alt assignment came from the weaker of the two methods | filter at `Moderate` | `--refalt-conf High`/`Low` |
-| 6 | TopGenomicSeq MAPQ | Markers whose context-sequence alignment was low-quality | filter at MAPQ ≥ 30 | `--mapq-topseq N` (0–60) |
-| 7 | Probe MAPQ | Same idea, but for the probe alignment | disabled by default | `--mapq-probe N` (0–60) |
-| 8 | CoordDelta | Markers where the probe and TopSeq disagree about the exact coordinate | disabled by default | `--coord-delta N` |
-| 9 | Indels | Insertion/deletion markers (most genotyping pipelines want SNPs only) | excluded by default | `--keep-indels` |
-| 10 | Polymorphic positions | Multiple markers landing at the same position with different Ref/Alt assignments | excluded by default | `--keep-polymorphic` |
-| 11 | Ambiguous SNPs | SNPs whose alleles are `{A,T}` or `{C,G}` — strand-ambiguous in downstream tools | excluded by default | `--keep-ambiguous` |
+| 3 | Min-anchor evidence | Markers placed by less-trusted evidence | filter at `topseq` (allows `topseq_n_probe` + `topseq_only`) | `--min-anchor dual`/`probe` |
+| 4 | Tie policy | Markers whose locus required certain tie-break steps (e.g. picking a placed chromosome over a scaffold) | filter at `resolved` (rejects `scaffold_resolved` and `locus_unresolved`) | `--tie-policy unique`/`avoid_scaffolds` |
+| 5 | Min-refalt-confidence | Markers where the Ref/Alt assignment came from the weaker of the two methods | filter at `moderate` | `--min-refalt-confidence high`/`low` |
+| 6 | TopGenomicSeq MAPQ | Markers whose context-sequence alignment was low-quality | filter at MAPQ ≥ 30 | `--min-mapq-topseq N\|off` |
+| 7 | Probe MAPQ | Same idea, but for the probe alignment | disabled by default | `--min-mapq-probe N\|off` |
+| 8 | Coord-delta | Markers where the probe and TopSeq disagree about the exact coordinate | disabled by default | `--max-coord-delta N\|off` |
+| 9 | Indels | Insertion/deletion markers (most genotyping pipelines want SNPs only) | excluded by default | `--include-indels` |
+| 10 | Polymorphic positions | Multiple markers landing at the same position with different Ref/Alt assignments | excluded by default | `--include-polymorphic` |
+| 11 | Ambiguous SNPs | SNPs whose alleles are `{A,T}` or `{C,G}` — strand-ambiguous in downstream tools | excluded by default | `--include-ambiguous-snps` |
 
 ## How to choose stringency
 
-The first three knobs (`--coordinate-role`, `--tie-label`, `--refalt-conf`)
-control how confident you want to be in each marker that survives:
+The first three knobs (`--min-anchor`, `--tie-policy`,
+`--min-refalt-confidence`) control how confident you want to be in each
+marker that survives. For a one-line shortcut, `--preset strict`,
+`--preset default`, or `--preset permissive` bundle the strictness,
+threshold, and include/exclude flags together; individual flags passed
+alongside still override.
 
-- **High / strict** — only the most-trusted markers. Best for precision-sensitive
+- **strict** — only the most-trusted markers. Best for precision-sensitive
   applications (e.g. fine-mapping).
-- **Moderate / default** — the recommended balance. Drops only what is clearly
-  weak.
-- **Low / permissive** — keep as many markers as possible. Best when downstream
+- **default** (recommended) — balanced. Drops only what is clearly weak.
+- **permissive** — keep as many markers as possible. Best when downstream
   software has its own filters and coverage matters more than confidence.
 
 The exempt-when-`NaN` pattern: a marker without a probe alignment carries
-`MAPQ_Probe = NaN`, and the `--mapq-probe` filter intentionally lets it
-through (NaN means "not measured here", not "MAPQ was zero"). The same applies
-to `MAPQ_TopGenomicSeq = NaN` for `probe_only` markers.
+`MAPQ_Probe = NaN`, and the `--min-mapq-probe` filter intentionally lets
+it through (NaN means "not measured here", not "MAPQ was zero"). The same
+applies to `MAPQ_TopGenomicSeq = NaN` for `probe_only` markers.
 
 ## Per-marker traceability
 

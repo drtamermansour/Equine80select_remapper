@@ -16,21 +16,31 @@
 #   -a / --assembly      Assembly name for output labels (e.g. equCab3 →
 #                        columns like Chr_equCab3); must be explicitly provided
 #
-# Optional:
-#   -o / --output-dir    Output directory (default: ./output)
-#   -t / --threads       Threads for minimap2 (default: 4)
-#   --mapq-topseq        Min MAPQ for TopGenomicSeq alignments (default: 30)
-#   --mapq-probe         Min MAPQ for probe alignments when >0 (default: 0 = disabled)
-#   --coord-delta        Remove markers where |probe_coord − CIGAR_coord| > N (default: -1 = disabled)
-#   --coordinate-role    Anchor threshold: High / Moderate (default) / Low
-#   --tie-label          Tie threshold: unique / resolved (default) / avoid_scaffolds
-#   --refalt-conf        RefAlt confidence: High / Moderate (default) / Low
-#   --keep-indels        Include indel markers in outputs (default: excluded)
-#   --keep-polymorphic   Keep polymorphic positions (default: excluded)
-#   --keep-ambiguous     Keep ambiguous (A/T, C/G) SNPs in outputs (default: excluded)
-#   --keep-temp          Keep intermediate FASTA/SAM files
-#   --resume             Skip step 2 if remapped CSV and SAM files already exist
-#   -h / --help          Show this help message
+# Optional — I/O:
+#   -o / --output-dir       Output directory (default: ./output)
+#   -t / --threads          Threads for minimap2 (default: 4)
+#
+# Optional — Filter strictness:
+#   --min-anchor             Minimum anchor evidence: dual / topseq (default) / probe
+#   --tie-policy             Tie resolution accepted: unique / resolved (default) / avoid_scaffolds
+#   --min-refalt-confidence  RefAlt confidence: high / moderate (default) / low
+#
+# Optional — Thresholds (use 'off' to disable):
+#   --min-mapq-topseq N|off  Min MAPQ for TopGenomicSeq alignments (default: 30)
+#   --min-mapq-probe  N|off  Min MAPQ for probe alignments (default: off)
+#   --max-coord-delta N|off  Remove markers where |probe_coord − CIGAR_coord| > N (default: off)
+#
+# Optional — Include/exclude (disabled by default):
+#   --include-indels          Include indel markers
+#   --include-polymorphic     Include markers at polymorphic positions
+#   --include-ambiguous-snps  Include ambiguous (A/T, C/G) SNPs
+#
+# Optional — Operational:
+#   --preset      Tune strictness+threshold+include flags together:
+#                 strict / default / permissive. Individual flags override.
+#   --keep-temp   Keep intermediate FASTA/SAM files
+#   --resume      Skip step 2 if remapped CSV and SAM files already exist
+#   -h / --help   Show this help message
 #
 # Example:
 #   bash run_pipeline.sh \
@@ -66,15 +76,17 @@ REFERENCE=""
 ASSEMBLY=""
 OUTPUT_DIR="./output"
 THREADS=4
-MAPQ_TOPSEQ=30
-MAPQ_PROBE=0
-COORD_DELTA=-1
-COORDINATE_ROLE="Moderate"
-TIE_LABEL="resolved"
-REFALT_CONF="Moderate"
-KEEP_INDELS=""
-KEEP_POLYMORPHIC=""
-KEEP_AMBIGUOUS=""
+# QC-filter flags are pass-through: empty string = use qc_filter.py's default.
+MIN_ANCHOR=""
+TIE_POLICY=""
+MIN_REFALT_CONFIDENCE=""
+MIN_MAPQ_TOPSEQ=""
+MIN_MAPQ_PROBE=""
+MAX_COORD_DELTA=""
+INCLUDE_INDELS=""
+INCLUDE_POLYMORPHIC=""
+INCLUDE_AMBIGUOUS_SNPS=""
+PRESET=""
 KEEP_TEMP=""
 RESUME=""
 
@@ -86,23 +98,24 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -i|--manifest)      MANIFEST="$2";    shift 2 ;;
-        -r|--reference)     REFERENCE="$2";   shift 2 ;;
-        -a|--assembly)      ASSEMBLY="$2";    shift 2 ;;
-        -o|--output-dir)    OUTPUT_DIR="$2";  shift 2 ;;
-        -t|--threads)       THREADS="$2";     shift 2 ;;
-        --mapq-topseq)      MAPQ_TOPSEQ="$2"; shift 2 ;;
-        --mapq-probe)       MAPQ_PROBE="$2";  shift 2 ;;
-        --coord-delta)      COORD_DELTA="$2"; shift 2 ;;
-        --coordinate-role)  COORDINATE_ROLE="$2"; shift 2 ;;
-        --tie-label)        TIE_LABEL="$2"; shift 2 ;;
-        --refalt-conf)      REFALT_CONF="$2"; shift 2 ;;
-        --keep-indels)      KEEP_INDELS="--keep-indels"; shift ;;
-        --keep-polymorphic) KEEP_POLYMORPHIC="--keep-polymorphic"; shift ;;
-        --keep-ambiguous)   KEEP_AMBIGUOUS="--keep-ambiguous"; shift ;;
-        --keep-temp)        KEEP_TEMP="--keep-temp"; shift ;;
-        --resume)           RESUME=1; shift ;;
-        -h|--help)          usage ;;
+        -i|--manifest)              MANIFEST="$2";              shift 2 ;;
+        -r|--reference)             REFERENCE="$2";             shift 2 ;;
+        -a|--assembly)              ASSEMBLY="$2";              shift 2 ;;
+        -o|--output-dir)            OUTPUT_DIR="$2";            shift 2 ;;
+        -t|--threads)               THREADS="$2";               shift 2 ;;
+        --min-anchor)               MIN_ANCHOR="$2";            shift 2 ;;
+        --tie-policy)               TIE_POLICY="$2";            shift 2 ;;
+        --min-refalt-confidence)    MIN_REFALT_CONFIDENCE="$2"; shift 2 ;;
+        --min-mapq-topseq)          MIN_MAPQ_TOPSEQ="$2";       shift 2 ;;
+        --min-mapq-probe)           MIN_MAPQ_PROBE="$2";        shift 2 ;;
+        --max-coord-delta)          MAX_COORD_DELTA="$2";       shift 2 ;;
+        --include-indels)           INCLUDE_INDELS="--include-indels";                 shift ;;
+        --include-polymorphic)      INCLUDE_POLYMORPHIC="--include-polymorphic";       shift ;;
+        --include-ambiguous-snps)   INCLUDE_AMBIGUOUS_SNPS="--include-ambiguous-snps"; shift ;;
+        --preset)                   PRESET="$2";                shift 2 ;;
+        --keep-temp)                KEEP_TEMP="--keep-temp";    shift ;;
+        --resume)                   RESUME=1;                   shift ;;
+        -h|--help)                  usage ;;
         *) echo "Unknown argument: $1"; usage ;;
     esac
 done
@@ -135,9 +148,9 @@ echo " Reference:   $REFERENCE"
 echo " Assembly:    $ASSEMBLY"
 echo " Output dir:  $OUTPUT_DIR"
 echo " Threads:     $THREADS"
-echo " MAPQ TopSeq: $MAPQ_TOPSEQ"
-echo " MAPQ Probe:  $MAPQ_PROBE (0 = disabled)"
-echo " CoordDelta:  $COORD_DELTA (-1 = disabled)"
+if [[ -n "$PRESET" ]]; then
+    echo " Preset:      $PRESET"
+fi
 echo "========================================================"
 
 # ── Step 1: Index reference if needed ────────────────────────────────────────
@@ -176,6 +189,20 @@ else
 fi
 
 # ── Step 3: QC filtering and output generation (Python) ──────────────────────
+# Only pass strictness/threshold flags the user actually supplied; otherwise let
+# qc_filter.py use its own defaults (or the preset's values).
+QC_ARGS=()
+[[ -n "$PRESET"                ]] && QC_ARGS+=(--preset "$PRESET")
+[[ -n "$MIN_ANCHOR"            ]] && QC_ARGS+=(--min-anchor "$MIN_ANCHOR")
+[[ -n "$TIE_POLICY"            ]] && QC_ARGS+=(--tie-policy "$TIE_POLICY")
+[[ -n "$MIN_REFALT_CONFIDENCE" ]] && QC_ARGS+=(--min-refalt-confidence "$MIN_REFALT_CONFIDENCE")
+[[ -n "$MIN_MAPQ_TOPSEQ"       ]] && QC_ARGS+=(--min-mapq-topseq "$MIN_MAPQ_TOPSEQ")
+[[ -n "$MIN_MAPQ_PROBE"        ]] && QC_ARGS+=(--min-mapq-probe  "$MIN_MAPQ_PROBE")
+[[ -n "$MAX_COORD_DELTA"       ]] && QC_ARGS+=(--max-coord-delta "$MAX_COORD_DELTA")
+[[ -n "$INCLUDE_INDELS"        ]] && QC_ARGS+=("$INCLUDE_INDELS")
+[[ -n "$INCLUDE_POLYMORPHIC"   ]] && QC_ARGS+=("$INCLUDE_POLYMORPHIC")
+[[ -n "$INCLUDE_AMBIGUOUS_SNPS" ]] && QC_ARGS+=("$INCLUDE_AMBIGUOUS_SNPS")
+
 echo ""
 echo "[pipeline] Step 3: Running qc_filter.py..."
 python "$SCRIPT_DIR/scripts/qc_filter.py" \
@@ -184,17 +211,9 @@ python "$SCRIPT_DIR/scripts/qc_filter.py" \
     -v  "$VCF_CONTIGS" \
     -a  "$ASSEMBLY" \
     -o  "$QC_DIR" \
-    --coordinate-role "$COORDINATE_ROLE" \
-    --tie-label      "$TIE_LABEL" \
-    --refalt-conf    "$REFALT_CONF" \
-    --mapq-topseq    "$MAPQ_TOPSEQ" \
-    --mapq-probe     "$MAPQ_PROBE" \
-    --coord-delta    "$COORD_DELTA" \
-    --temp-dir       "$TEMP_DIR" \
-    --prefix         "$PREFIX" \
-    $KEEP_INDELS \
-    $KEEP_POLYMORPHIC \
-    $KEEP_AMBIGUOUS
+    --temp-dir "$TEMP_DIR" \
+    --prefix   "$PREFIX" \
+    "${QC_ARGS[@]}"
 
 # ── Cleanup temp files ────────────────────────────────────────────────────────
 if [[ -z "$KEEP_TEMP" ]]; then

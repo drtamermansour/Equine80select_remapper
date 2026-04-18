@@ -13,10 +13,10 @@ from qc_filter import (
     make_anchor_alleles,
     apply_exclude_indels_filter,
     apply_exclude_ambiguous_snps_filter,
-    apply_coordinate_role_filter,   # Task 5
-    apply_tie_label_filter,          # Task 5
-    apply_refalt_conf_filter,        # Task 5
-    format_three_d_table,            # Task 5
+    apply_min_anchor_filter,
+    apply_tie_policy_filter,
+    apply_min_refalt_confidence_filter,
+    format_three_d_table,
     _tag_removed,
     WHY_FILTERED_LABELS,
 )
@@ -347,37 +347,37 @@ def test_coord_delta_filter_uses_anchor_column():
     assert set(result["anchor_test"]) == {"topseq_only", "probe_only"}
 
 
-# ── apply_coordinate_role_filter ──────────────────────────────────────────────
+# ── apply_min_anchor_filter ───────────────────────────────────────────────────
 
 def _anchor_df(*values):
     return pd.DataFrame({"anchor_testasm": list(values)})
 
 
-def test_coord_role_high_keeps_only_topseq_n_probe():
+def test_min_anchor_dual_keeps_only_topseq_n_probe():
     df = _anchor_df("topseq_n_probe", "topseq_only", "probe_only", "N/A")
-    result = apply_coordinate_role_filter(df, "testasm", "High")
+    result = apply_min_anchor_filter(df, "testasm", "dual")
     assert list(result["anchor_testasm"]) == ["topseq_n_probe"]
 
 
-def test_coord_role_moderate_accepts_topseq_only():
+def test_min_anchor_topseq_accepts_topseq_only():
     df = _anchor_df("topseq_n_probe", "topseq_only", "probe_only", "N/A")
-    result = apply_coordinate_role_filter(df, "testasm", "Moderate")
+    result = apply_min_anchor_filter(df, "testasm", "topseq")
     assert set(result["anchor_testasm"]) == {"topseq_n_probe", "topseq_only"}
 
 
-def test_coord_role_low_accepts_probe_only():
+def test_min_anchor_probe_accepts_probe_only():
     df = _anchor_df("topseq_n_probe", "topseq_only", "probe_only", "N/A")
-    result = apply_coordinate_role_filter(df, "testasm", "Low")
+    result = apply_min_anchor_filter(df, "testasm", "probe")
     assert set(result["anchor_testasm"]) == {"topseq_n_probe", "topseq_only", "probe_only"}
 
 
-def test_coord_role_na_always_excluded():
-    for role in ("High", "Moderate", "Low"):
-        result = apply_coordinate_role_filter(_anchor_df("N/A"), "testasm", role)
-        assert len(result) == 0, f"N/A not excluded at role={role}"
+def test_min_anchor_na_always_excluded():
+    for min_anchor in ("dual", "topseq", "probe"):
+        result = apply_min_anchor_filter(_anchor_df("N/A"), "testasm", min_anchor)
+        assert len(result) == 0, f"N/A not excluded at min_anchor={min_anchor}"
 
 
-# ── apply_tie_label_filter ─────────────────────────────────────────────────────
+# ── apply_tie_policy_filter ────────────────────────────────────────────────────
 
 _ALL_TIES = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
              "CoordDelta_resolved", "scaffold_resolved", "locus_unresolved", "N/A"]
@@ -388,20 +388,20 @@ def _tie_df(*values):
 
 
 def test_tie_unique_keeps_only_unique():
-    result = apply_tie_label_filter(_tie_df(*_ALL_TIES), "testasm", "unique")
+    result = apply_tie_policy_filter(_tie_df(*_ALL_TIES), "testasm", "unique")
     assert list(result["tie_testasm"]) == ["unique"]
 
 
 def test_tie_resolved_excludes_scaffold_resolved():
     """resolved does NOT include scaffold_resolved — that requires avoid_scaffolds."""
-    result = apply_tie_label_filter(_tie_df(*_ALL_TIES), "testasm", "resolved")
+    result = apply_tie_policy_filter(_tie_df(*_ALL_TIES), "testasm", "resolved")
     assert set(result["tie_testasm"]) == {
         "unique", "AS_resolved", "dAS_resolved", "NM_resolved", "CoordDelta_resolved"
     }
 
 
 def test_tie_avoid_scaffolds_adds_scaffold_resolved():
-    result = apply_tie_label_filter(
+    result = apply_tie_policy_filter(
         _tie_df("unique", "scaffold_resolved", "locus_unresolved", "N/A"),
         "testasm", "avoid_scaffolds"
     )
@@ -409,12 +409,12 @@ def test_tie_avoid_scaffolds_adds_scaffold_resolved():
 
 
 def test_tie_locus_unresolved_always_excluded():
-    for label in ("unique", "resolved", "avoid_scaffolds"):
-        result = apply_tie_label_filter(_tie_df("locus_unresolved"), "testasm", label)
-        assert len(result) == 0, f"locus_unresolved not excluded at label={label}"
+    for tie_policy in ("unique", "resolved", "avoid_scaffolds"):
+        result = apply_tie_policy_filter(_tie_df("locus_unresolved"), "testasm", tie_policy)
+        assert len(result) == 0, f"locus_unresolved not excluded at tie_policy={tie_policy}"
 
 
-# ── apply_refalt_conf_filter ───────────────────────────────────────────────────
+# ── apply_min_refalt_confidence_filter ─────────────────────────────────────────
 
 _ALL_REFALT = [
     "NM_match", "NM_unmatch", "NM_validated", "NM_mismatch",
@@ -427,19 +427,19 @@ def _refalt_df(*values):
 
 
 def test_refalt_high_keeps_nm_match_and_validated():
-    result = apply_refalt_conf_filter(_refalt_df(*_ALL_REFALT), "testasm", "High")
+    result = apply_min_refalt_confidence_filter(_refalt_df(*_ALL_REFALT), "testasm", "high")
     assert set(result["RefAltMethodAgreement_testasm"]) == {"NM_match", "NM_validated"}
 
 
 def test_refalt_moderate_adds_nm_na_and_nm_tied():
-    result = apply_refalt_conf_filter(_refalt_df(*_ALL_REFALT), "testasm", "Moderate")
+    result = apply_min_refalt_confidence_filter(_refalt_df(*_ALL_REFALT), "testasm", "moderate")
     assert set(result["RefAltMethodAgreement_testasm"]) == {
         "NM_match", "NM_validated", "NM_N/A", "NM_tied"
     }
 
 
 def test_refalt_low_adds_nm_only_nm_unmatch_nm_corrected():
-    result = apply_refalt_conf_filter(_refalt_df(*_ALL_REFALT), "testasm", "Low")
+    result = apply_min_refalt_confidence_filter(_refalt_df(*_ALL_REFALT), "testasm", "low")
     assert set(result["RefAltMethodAgreement_testasm"]) == {
         "NM_match", "NM_validated", "NM_N/A", "NM_tied",
         "NM_only", "NM_unmatch", "NM_corrected",
@@ -447,14 +447,14 @@ def test_refalt_low_adds_nm_only_nm_unmatch_nm_corrected():
 
 
 def test_refalt_nm_mismatch_always_excluded():
-    for conf in ("High", "Moderate", "Low"):
-        result = apply_refalt_conf_filter(_refalt_df("NM_mismatch"), "testasm", conf)
+    for conf in ("high", "moderate", "low"):
+        result = apply_min_refalt_confidence_filter(_refalt_df("NM_mismatch"), "testasm", conf)
         assert len(result) == 0, f"NM_mismatch not excluded at conf={conf}"
 
 
 def test_refalt_unresolved_always_excluded():
-    for conf in ("High", "Moderate", "Low"):
-        result = apply_refalt_conf_filter(_refalt_df("refalt_unresolved"), "testasm", conf)
+    for conf in ("high", "moderate", "low"):
+        result = apply_min_refalt_confidence_filter(_refalt_df("refalt_unresolved"), "testasm", conf)
         assert len(result) == 0, f"refalt_unresolved not excluded at conf={conf}"
 
 
@@ -469,27 +469,33 @@ def _run_parse_args(extra_args):
         f"sys.argv=['q','-i','x','-r','x','-v','x','-a','x',"
         f"{extra_args}]; "
         f"from qc_filter import parse_args; a=parse_args(); "
-        f"print(a.mapq_topseq, a.mapq_probe)"
+        f"print(a.min_mapq_topseq, a.min_mapq_probe)"
     )
     return subprocess.run([sys.executable, "-c", cmd], capture_output=True, text=True)
 
 
 def test_mapq_topseq_rejects_negative():
-    assert _run_parse_args("'--mapq-topseq','-1'").returncode != 0
+    assert _run_parse_args("'--min-mapq-topseq','-1'").returncode != 0
 
 
 def test_mapq_topseq_rejects_above_60():
-    assert _run_parse_args("'--mapq-topseq','61'").returncode != 0
+    assert _run_parse_args("'--min-mapq-topseq','61'").returncode != 0
 
 
 def test_mapq_topseq_accepts_0_and_60():
-    proc = _run_parse_args("'--mapq-topseq','0','--mapq-probe','60'")
+    proc = _run_parse_args("'--min-mapq-topseq','0','--min-mapq-probe','60'")
     assert proc.returncode == 0
     assert "0 60" in proc.stdout
 
 
+def test_mapq_topseq_accepts_off_keyword():
+    proc = _run_parse_args("'--min-mapq-topseq','off','--min-mapq-probe','off'")
+    assert proc.returncode == 0
+    assert "0 0" in proc.stdout
+
+
 def test_mapq_probe_rejects_negative():
-    assert _run_parse_args("'--mapq-probe','-1'").returncode != 0
+    assert _run_parse_args("'--min-mapq-probe','-1'").returncode != 0
 
 
 # ── format_three_d_table ───────────────────────────────────────────────────────

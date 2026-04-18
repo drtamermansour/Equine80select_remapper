@@ -54,15 +54,15 @@ records the **first** rejection per marker:
 
 1. `stage_1_failed_markers` — `Strand=N/A` (always on)
 2. `stage_2_design_conflict` — Ref ≠ genome ref / `NM_mismatch` (always on)
-3. `stage_3_coordinate_role` — `--coordinate-role` (`High`/`Moderate`/`Low`)
-4. `stage_4_tie_label` — `--tie-label` (`unique`/`resolved`/`avoid_scaffolds`)
-5. `stage_5_refalt_conf` — `--refalt-conf` (`High`/`Moderate`/`Low`)
-6. `stage_6_mapq_topseq` — `--mapq-topseq 30` (probe_only NaN-exempt)
-7. `stage_7_mapq_probe` — `--mapq-probe 0` disabled (topseq_only NaN-exempt)
-8. `stage_8_coord_delta` — `--coord-delta -1` disabled
-9. `stage_9_indel_excluded` — off by default; `--keep-indels` to include
-10. `stage_10_polymorphic` — off by default; `--keep-polymorphic` to include
-11. `stage_11_ambiguous_snp` — off by default; `--keep-ambiguous` to include
+3. `stage_3_coordinate_role` — `--min-anchor` (`dual`/`topseq`/`probe`) [flag renamed; internal stage label kept for trace-CSV compatibility]
+4. `stage_4_tie_label` — `--tie-policy` (`unique`/`resolved`/`avoid_scaffolds`) [flag renamed; stage label kept]
+5. `stage_5_refalt_conf` — `--min-refalt-confidence` (`high`/`moderate`/`low`) [flag renamed; stage label kept]
+6. `stage_6_mapq_topseq` — `--min-mapq-topseq 30` (probe_only NaN-exempt; pass `off` to disable)
+7. `stage_7_mapq_probe` — `--min-mapq-probe off` default (topseq_only NaN-exempt)
+8. `stage_8_coord_delta` — `--max-coord-delta off` default
+9. `stage_9_indel_excluded` — off by default; `--include-indels` to include
+10. `stage_10_polymorphic` — off by default; `--include-polymorphic` to include
+11. `stage_11_ambiguous_snp` — off by default; `--include-ambiguous-snps` to include
 
 `tie-label resolved` accepts all `*_resolved` **except** `scaffold_resolved`
 (see `_TIE_RESOLVED` in `qc_filter.py`).
@@ -101,7 +101,7 @@ final 98.7%.
 
 2. **`MAPQ_Probe = NaN` ≠ MAPQ was zero.** NaN means `topseq_only` (no probe alignment used). MAPQ filters must do `.notna() & (col < threshold)` — see `apply_probe_mapq_filter`. Same for `MAPQ_TopGenomicSeq = NaN` for `probe_only` markers.
 
-3. **`CoordDelta = -1` is a sentinel**, not a negative distance. `topseq_only` and `probe_only` carry it because there's no probe-vs-CIGAR pair to compare. Stage 8 `--coord-delta N` correctly leaves them through (`-1 > N` is false for N ≥ 0).
+3. **`CoordDelta = -1` is a sentinel**, not a negative distance. `topseq_only` and `probe_only` carry it because there's no probe-vs-CIGAR pair to compare. Stage 8 `--max-coord-delta N` correctly leaves them through (`-1 > N` is false for N ≥ 0).
 
 4. **Probe alignment strand ≠ TopSeq alignment strand.** They are independent SAM-FLAG-derived values. Mixing them caused the original ±51 bp bug. `get_probe_coordinate` uses **probe** strand; `parse_cigar_to_ref_pos` uses **TopSeq** strand for `target_idx`.
 

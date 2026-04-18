@@ -24,9 +24,10 @@ Usage:
       -v vcf_contigs.txt \\
       -a equCab3 \\
       -o output_dir/ \\
-      [--coordinate-role Moderate] [--tie-label resolved] [--refalt-conf Moderate] \\
-      [--mapq-topseq 30] [--mapq-probe 0] [--coord-delta -1] \\
-      [--keep-indels] [--keep-polymorphic] [--keep-ambiguous] \\
+      [--min-anchor topseq] [--tie-policy resolved] [--min-refalt-confidence moderate] \\
+      [--min-mapq-topseq 30] [--min-mapq-probe off] [--max-coord-delta off] \\
+      [--include-indels] [--include-polymorphic] [--include-ambiguous-snps] \\
+      [--preset strict|default|permissive] \\
       [--temp-dir /tmp/remap] [--prefix Equine80select]
 """
 
@@ -75,12 +76,14 @@ def _tag_removed(why: pd.Series, before_idx, after_idx, label: str) -> None:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-def _mapq_int(value):
-    """argparse type that validates MAPQ is an integer in [0, 60]."""
+def _mapq_or_off(value):
+    """argparse type: integer MAPQ in [0, 60], or the keyword 'off' (returns 0)."""
+    if isinstance(value, str) and value.lower() == "off":
+        return 0
     try:
         ivalue = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"{value!r} is not an integer.")
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer or 'off'.")
     if not (0 <= ivalue <= 60):
         raise argparse.ArgumentTypeError(
             f"MAPQ value {ivalue} is out of range [0, 60]."
@@ -88,54 +91,141 @@ def _mapq_int(value):
     return ivalue
 
 
+def _coord_delta_or_off(value):
+    """argparse type: non-negative integer for max |probe − CIGAR| delta, or 'off' (returns -1)."""
+    if isinstance(value, str) and value.lower() == "off":
+        return -1
+    try:
+        ivalue = int(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a non-negative integer or 'off'.")
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError(
+            f"--max-coord-delta must be >= 0 (or 'off'); got {ivalue}."
+        )
+    return ivalue
+
+
+# Preset bundles — tune the strictness + threshold + include/exclude flags as a set.
+# Individual flags passed after --preset override whatever the preset set.
+PRESETS = {
+    "strict": {
+        "min_anchor":              "dual",
+        "tie_policy":              "unique",
+        "min_refalt_confidence":   "high",
+        "min_mapq_topseq":         30,
+        "min_mapq_probe":          20,
+        "max_coord_delta":         1,
+        "include_indels":          False,
+        "include_polymorphic":     False,
+        "include_ambiguous_snps":  False,
+    },
+    "default": {
+        "min_anchor":              "topseq",
+        "tie_policy":              "resolved",
+        "min_refalt_confidence":   "moderate",
+        "min_mapq_topseq":         30,
+        "min_mapq_probe":          0,
+        "max_coord_delta":         -1,
+        "include_indels":          False,
+        "include_polymorphic":     False,
+        "include_ambiguous_snps":  False,
+    },
+    "permissive": {
+        "min_anchor":              "probe",
+        "tie_policy":              "avoid_scaffolds",
+        "min_refalt_confidence":   "low",
+        "min_mapq_topseq":         0,
+        "min_mapq_probe":          0,
+        "max_coord_delta":         -1,
+        "include_indels":          True,
+        "include_polymorphic":     True,
+        "include_ambiguous_snps":  True,
+    },
+}
+
+
 def parse_args():
-    p = argparse.ArgumentParser(description="QC filter and output generation for remapped manifests.")
-    p.add_argument("-i", "--input",    required=True, help="Remapped manifest CSV (from remap_manifest.py)")
-    p.add_argument("-r", "--reference", required=True, help="Reference genome FASTA")
-    p.add_argument("-v", "--vcf-contigs", required=True, help="VCF contig header file")
-    p.add_argument("-a", "--assembly", default="new_assembly", help="Assembly name (must match remap_manifest.py -a)")
-    p.add_argument("-o", "--output-dir", default=".", help="Output directory (default: current directory)")
-    p.add_argument("--mapq-topseq", type=_mapq_int, default=30,
-                   help="Minimum MAPQ for TopGenomicSeq alignments (0–60, default: 30); probe_only exempt")
-    p.add_argument("--mapq-probe", type=_mapq_int, default=0,
-                   help="Minimum MAPQ for probe alignments (0–60, default: 0 = disabled); topseq_only exempt")
-    p.add_argument("--temp-dir", default=None,
-                   help="Directory for intermediate files (default: output-dir)")
-    p.add_argument("--prefix", default=None,
-                   help="Output file prefix (default: derived from input filename)")
-    p.add_argument("--coord-delta", type=int, default=-1,
-                   help="Maximum allowed CoordDelta (|probe_coord - CIGAR_coord|). "
-                        "-1 = disabled (default). Any value >= 0 removes markers with "
-                        "CoordDelta > threshold. topseq_only and probe_only markers "
-                        "(CoordDelta=-1) pass through.")
-    p.add_argument(
-        "--coordinate-role", choices=["High", "Moderate", "Low"], default="Moderate",
-        help="Minimum coordinate role: High=topseq_n_probe only; "
-             "Moderate=also allows topseq_only (default); Low=also allows probe_only."
+    p = argparse.ArgumentParser(
+        description="QC filter and output generation for remapped manifests.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument(
-        "--tie-label", choices=["unique", "resolved", "avoid_scaffolds"], default="resolved",
-        help="Minimum tie resolution: unique; resolved=unique+*_resolved (default); "
-             "avoid_scaffolds=resolved+scaffold_resolved."
+
+    g_io = p.add_argument_group("I/O")
+    g_io.add_argument("-i", "--input",    required=True, help="Remapped manifest CSV (from remap_manifest.py)")
+    g_io.add_argument("-r", "--reference", required=True, help="Reference genome FASTA")
+    g_io.add_argument("-v", "--vcf-contigs", required=True, help="VCF contig header file")
+    g_io.add_argument("-a", "--assembly", default="new_assembly",
+                      help="Assembly name (must match remap_manifest.py -a)")
+    g_io.add_argument("-o", "--output-dir", default=".", help="Output directory")
+    g_io.add_argument("--prefix", default=None,
+                      help="Output file prefix (default: derived from input filename)")
+
+    g_strict = p.add_argument_group("Filter strictness")
+    g_strict.add_argument(
+        "--min-anchor", choices=["dual", "topseq", "probe"], default="topseq",
+        help="Minimum anchor evidence: dual=topseq_n_probe only; "
+             "topseq=also topseq_only; probe=also probe_only.",
     )
-    p.add_argument(
-        "--refalt-conf", choices=["High", "Moderate", "Low"], default="Moderate",
-        help="Minimum RefAlt confidence: High=NM_match+NM_validated; "
-             "Moderate=+NM_N/A+NM_tied (default); Low=+NM_only+NM_unmatch+NM_corrected."
+    g_strict.add_argument(
+        "--tie-policy", choices=["unique", "resolved", "avoid_scaffolds"], default="resolved",
+        help="Minimum tie resolution accepted: unique only; resolved adds "
+             "AS/dAS/NM/CoordDelta_resolved; avoid_scaffolds adds scaffold_resolved.",
     )
-    p.add_argument(
-        "--keep-indels", action="store_true", default=False,
-        help="Keep indel markers in outputs (default: False = indels excluded)."
+    g_strict.add_argument(
+        "--min-refalt-confidence", choices=["high", "moderate", "low"], default="moderate",
+        help="Minimum RefAlt confidence: high=NM_match+NM_validated; "
+             "moderate adds NM_N/A+NM_tied; low adds NM_only+NM_unmatch+NM_corrected.",
     )
-    p.add_argument(
-        "--keep-polymorphic", action="store_true", default=False,
-        help="Keep markers at polymorphic positions (default: False = removed)."
-    )
-    p.add_argument(
-        "--keep-ambiguous", action="store_true", default=False,
-        help="Keep ambiguous (A/T or C/G) SNPs in outputs (default: False = removed)."
-    )
-    return p.parse_args()
+
+    g_thr = p.add_argument_group("Thresholds (use 'off' to disable)")
+    g_thr.add_argument("--min-mapq-topseq", type=_mapq_or_off, default=30, metavar="N|off",
+                       help="Minimum MAPQ for TopGenomicSeq alignments; probe_only markers are exempt.")
+    g_thr.add_argument("--min-mapq-probe", type=_mapq_or_off, default=0, metavar="N|off",
+                       help="Minimum MAPQ for probe alignments; topseq_only markers are exempt. "
+                            "Default 0 disables the filter.")
+    g_thr.add_argument("--max-coord-delta", type=_coord_delta_or_off, default=-1, metavar="N|off",
+                       help="Maximum allowed |probe-CIGAR − TopSeq-CIGAR| coordinate delta. "
+                            "topseq_only and probe_only markers (CoordDelta=-1) pass through. "
+                            "Default disabled.")
+
+    g_keep = p.add_argument_group("Include/exclude")
+    g_keep.add_argument("--include-indels", action="store_true", default=False,
+                        help="Include indel markers in outputs (default: excluded).")
+    g_keep.add_argument("--include-polymorphic", action="store_true", default=False,
+                        help="Include markers at polymorphic positions (default: excluded).")
+    g_keep.add_argument("--include-ambiguous-snps", action="store_true", default=False,
+                        help="Include ambiguous (A/T or C/G) SNPs (default: excluded).")
+
+    g_op = p.add_argument_group("Operational")
+    g_op.add_argument("--preset", choices=["strict", "default", "permissive"], default=None,
+                      help="Tune strictness + threshold + include/exclude flags together. "
+                           "Individual flags passed alongside --preset override the preset.")
+    g_op.add_argument("--temp-dir", default=None,
+                      help="Directory for intermediate files (default: output-dir)")
+
+    args = p.parse_args()
+
+    # Apply preset only for options the user didn't set on the CLI.
+    if args.preset is not None:
+        bundle = PRESETS[args.preset]
+        # Collect which long options appeared on the command line.
+        user_set = _user_set_flags(sys.argv[1:])
+        for attr, value in bundle.items():
+            flag = "--" + attr.replace("_", "-")
+            if flag not in user_set:
+                setattr(args, attr, value)
+
+    return args
+
+
+def _user_set_flags(argv):
+    """Return the set of long flags the user passed (for preset-override detection)."""
+    flags = set()
+    for tok in argv:
+        if tok.startswith("--"):
+            flags.add(tok.split("=", 1)[0])
+    return flags
 
 
 
@@ -414,7 +504,7 @@ def polymorphic_positions(df, col_chr, col_pos):
     """Return the set of (chr, pos) tuples where multiple markers emit conflicting
     Ref/Alt assignments at the same coordinate.
 
-    Used by Stage 10 both to remove polymorphic markers and (when `--keep-polymorphic`
+    Used by Stage 10 both to remove polymorphic markers and (when `--include-polymorphic`
     is set) to compute the hypothetical count of markers that *would* have been
     removed if the filter had been applied.
     """
@@ -448,24 +538,24 @@ def apply_exclude_ambiguous_snps_filter(df):
 
 # ── COORDINATE ROLE FILTER ───────────────────────────────────────────────────
 
-def apply_coordinate_role_filter(df, assembly, role):
-    """Keep rows whose anchor_{assembly} meets the required role.
+def apply_min_anchor_filter(df, assembly, min_anchor):
+    """Keep rows whose anchor_{assembly} meets the required minimum anchor evidence.
 
     N/A is always excluded (unmapped; already removed by Stage 1, but guarded here).
-    High:     topseq_n_probe only
-    Moderate: topseq_n_probe + topseq_only  (default)
-    Low:      topseq_n_probe + topseq_only + probe_only
+    dual:   topseq_n_probe only
+    topseq: topseq_n_probe + topseq_only  (default)
+    probe:  topseq_n_probe + topseq_only + probe_only
     """
     col = f"anchor_{assembly}"
     allowed = {"topseq_n_probe"}
-    if role in ("Moderate", "Low"):
+    if min_anchor in ("topseq", "probe"):
         allowed.add("topseq_only")
-    if role == "Low":
+    if min_anchor == "probe":
         allowed.add("probe_only")
     return df[df[col].isin(allowed)]
 
 
-# ── TIE LABEL FILTER ─────────────────────────────────────────────────────────
+# ── TIE POLICY FILTER ────────────────────────────────────────────────────────
 
 _TIE_RESOLVED = frozenset([
     "unique", "AS_resolved", "dAS_resolved", "NM_resolved", "CoordDelta_resolved",
@@ -473,8 +563,8 @@ _TIE_RESOLVED = frozenset([
 _TIE_AVOID_SCAFFOLDS = _TIE_RESOLVED | frozenset(["scaffold_resolved"])
 
 
-def apply_tie_label_filter(df, assembly, label):
-    """Keep rows whose tie_{assembly} meets the required label.
+def apply_tie_policy_filter(df, assembly, tie_policy):
+    """Keep rows whose tie_{assembly} meets the required tie policy.
 
     tie=locus_unresolved is always excluded.
     unique:          unique only
@@ -482,41 +572,41 @@ def apply_tie_label_filter(df, assembly, label):
     avoid_scaffolds: resolved + scaffold_resolved
     """
     col = f"tie_{assembly}"
-    if label == "unique":
+    if tie_policy == "unique":
         allowed = {"unique"}
-    elif label == "resolved":
+    elif tie_policy == "resolved":
         allowed = _TIE_RESOLVED
-    elif label == "avoid_scaffolds":
+    elif tie_policy == "avoid_scaffolds":
         allowed = _TIE_AVOID_SCAFFOLDS
     else:
-        raise ValueError(f"Unknown tie label: {label!r}.")
+        raise ValueError(f"Unknown tie policy: {tie_policy!r}.")
     return df[df[col].isin(allowed)]
 
 
-# ── REFALT CONFIDENCE FILTER ──────────────────────────────────────────────────
+# ── MIN REFALT CONFIDENCE FILTER ─────────────────────────────────────────────
 
 _REFALT_HIGH     = frozenset(["NM_match", "NM_validated"])
 _REFALT_MODERATE = _REFALT_HIGH | frozenset(["NM_N/A", "NM_tied"])
 _REFALT_LOW      = _REFALT_MODERATE | frozenset(["NM_only", "NM_unmatch", "NM_corrected"])
 
 
-def apply_refalt_conf_filter(df, assembly, conf):
-    """Keep rows whose RefAltMethodAgreement_{assembly} meets the required confidence.
+def apply_min_refalt_confidence_filter(df, assembly, min_refalt_confidence):
+    """Keep rows whose RefAltMethodAgreement_{assembly} meets the required minimum confidence.
 
     NM_mismatch and refalt_unresolved are always excluded.
-    High:     NM_match, NM_validated
-    Moderate: High + NM_N/A, NM_tied  (default)
-    Low:      Moderate + NM_only, NM_unmatch, NM_corrected
+    high:     NM_match, NM_validated
+    moderate: high + NM_N/A, NM_tied  (default)
+    low:      moderate + NM_only, NM_unmatch, NM_corrected
     """
     col = f"RefAltMethodAgreement_{assembly}"
-    if conf == "High":
+    if min_refalt_confidence == "high":
         allowed = _REFALT_HIGH
-    elif conf == "Moderate":
+    elif min_refalt_confidence == "moderate":
         allowed = _REFALT_MODERATE
-    elif conf == "Low":
+    elif min_refalt_confidence == "low":
         allowed = _REFALT_LOW
     else:
-        raise ValueError(f"Unknown refalt conf: {conf!r}.")
+        raise ValueError(f"Unknown refalt confidence: {min_refalt_confidence!r}.")
     return df[df[col].isin(allowed)]
 
 
@@ -668,90 +758,90 @@ def run_qc(args):
     qc_stats["After design conflict filter"] = len(df_noconflict)
     print(f"[qc] Stage 2 — Design conflict removed: {len(df_mapped) - len(df_noconflict):,}; remaining: {len(df_noconflict):,}")
 
-    # ── Stage 3: Coordinate role ─────────────────────────────────────────────
+    # ── Stage 3: Min-anchor evidence ─────────────────────────────────────────
     col_anchor = f"anchor_{assembly}"
     if col_anchor in df_noconflict.columns:
-        df_coord_role = apply_coordinate_role_filter(df_noconflict, assembly, args.coordinate_role).copy()
+        df_coord_role = apply_min_anchor_filter(df_noconflict, assembly, args.min_anchor).copy()
         n_removed = len(df_noconflict) - len(df_coord_role)
-        print(f"[qc] Stage 3 — Coordinate role ({args.coordinate_role}): {n_removed:,} removed; {len(df_coord_role):,} remaining")
+        print(f"[qc] Stage 3 — min-anchor ({args.min_anchor}): {n_removed:,} removed; {len(df_coord_role):,} remaining")
     else:
-        print(f"[qc] WARNING: {col_anchor!r} column not found. Skipping coordinate role filter.")
+        print(f"[qc] WARNING: {col_anchor!r} column not found. Skipping min-anchor filter.")
         df_coord_role = df_noconflict
     _tag_removed(why_filtered, df_noconflict.index, df_coord_role.index, "stage_3_coordinate_role")
-    qc_stats[f"After coordinate role ({args.coordinate_role})"] = len(df_coord_role)
+    qc_stats[f"After min-anchor ({args.min_anchor})"] = len(df_coord_role)
 
-    # ── Stage 4: Tie label ────────────────────────────────────────────────────
+    # ── Stage 4: Tie policy ──────────────────────────────────────────────────
     col_tie = f"tie_{assembly}"
     if col_tie in df_coord_role.columns:
-        df_tie = apply_tie_label_filter(df_coord_role, assembly, args.tie_label).copy()
+        df_tie = apply_tie_policy_filter(df_coord_role, assembly, args.tie_policy).copy()
         n_removed = len(df_coord_role) - len(df_tie)
-        print(f"[qc] Stage 4 — Tie label ({args.tie_label}): {n_removed:,} removed; {len(df_tie):,} remaining")
+        print(f"[qc] Stage 4 — tie-policy ({args.tie_policy}): {n_removed:,} removed; {len(df_tie):,} remaining")
     else:
-        print(f"[qc] WARNING: {col_tie!r} column not found. Skipping tie label filter.")
+        print(f"[qc] WARNING: {col_tie!r} column not found. Skipping tie-policy filter.")
         df_tie = df_coord_role
     _tag_removed(why_filtered, df_coord_role.index, df_tie.index, "stage_4_tie_label")
-    qc_stats[f"After tie label ({args.tie_label})"] = len(df_tie)
+    qc_stats[f"After tie-policy ({args.tie_policy})"] = len(df_tie)
 
-    # ── Stage 5: RefAlt confidence ────────────────────────────────────────────
+    # ── Stage 5: Min-refalt-confidence ───────────────────────────────────────
     if col_refalt_agree in df_tie.columns:
-        df_refalt = apply_refalt_conf_filter(df_tie, assembly, args.refalt_conf).copy()
+        df_refalt = apply_min_refalt_confidence_filter(df_tie, assembly, args.min_refalt_confidence).copy()
         n_removed = len(df_tie) - len(df_refalt)
-        print(f"[qc] Stage 5 — RefAlt confidence ({args.refalt_conf}): {n_removed:,} removed; {len(df_refalt):,} remaining")
+        print(f"[qc] Stage 5 — min-refalt-confidence ({args.min_refalt_confidence}): {n_removed:,} removed; {len(df_refalt):,} remaining")
     else:
-        print(f"[qc] WARNING: {col_refalt_agree!r} column not found. Skipping RefAlt confidence filter.")
+        print(f"[qc] WARNING: {col_refalt_agree!r} column not found. Skipping min-refalt-confidence filter.")
         df_refalt = df_tie
     _tag_removed(why_filtered, df_tie.index, df_refalt.index, "stage_5_refalt_conf")
-    qc_stats[f"After RefAlt confidence ({args.refalt_conf})"] = len(df_refalt)
+    qc_stats[f"After min-refalt-confidence ({args.min_refalt_confidence})"] = len(df_refalt)
 
     # ── Stage 6: MAPQ_TopGenomicSeq (probe_only exempt via NaN) ──────────────
     ts_mapq = df_refalt["MAPQ_TopGenomicSeq"]
-    if args.mapq_topseq > 0:
-        ts_fail = ts_mapq.notna() & (ts_mapq < args.mapq_topseq)
+    if args.min_mapq_topseq > 0:
+        ts_fail = ts_mapq.notna() & (ts_mapq < args.min_mapq_topseq)
         df_mapq_ts = df_refalt[~ts_fail].copy()
         _tag_removed(why_filtered, df_refalt.index, df_mapq_ts.index, "stage_6_mapq_topseq")
         n_removed = len(df_refalt) - len(df_mapq_ts)
-        print(f"[qc] Stage 6 — MAPQ_TopGenomicSeq (>={args.mapq_topseq}): {n_removed:,} removed; {len(df_mapq_ts):,} remaining")
-        qc_stats[f"After MAPQ_TopGenomicSeq (>={args.mapq_topseq})"] = len(df_mapq_ts)
+        print(f"[qc] Stage 6 — min-mapq-topseq (>={args.min_mapq_topseq}): {n_removed:,} removed; {len(df_mapq_ts):,} remaining")
+        qc_stats[f"After min-mapq-topseq (>={args.min_mapq_topseq})"] = len(df_mapq_ts)
     else:
         df_mapq_ts = df_refalt
-        print("[qc] Stage 6 — MAPQ_TopGenomicSeq skipped (--mapq-topseq 0).")
-        qc_stats["Stage 6 skipped — MAPQ_TopGenomicSeq (--mapq-topseq 0)"] = len(df_mapq_ts)
+        print("[qc] Stage 6 — min-mapq-topseq skipped (--min-mapq-topseq off).")
+        qc_stats["Stage 6 skipped — min-mapq-topseq (--min-mapq-topseq off)"] = len(df_mapq_ts)
 
     # ── Stage 7: MAPQ_Probe (topseq_only exempt via NaN) ─────────────────────
-    if args.mapq_probe > 0:
-        df_mapq = apply_probe_mapq_filter(df_mapq_ts, args.mapq_probe).copy()
+    if args.min_mapq_probe > 0:
+        df_mapq = apply_probe_mapq_filter(df_mapq_ts, args.min_mapq_probe).copy()
         _tag_removed(why_filtered, df_mapq_ts.index, df_mapq.index, "stage_7_mapq_probe")
         n_removed = len(df_mapq_ts) - len(df_mapq)
-        print(f"[qc] Stage 7 — MAPQ_Probe (>={args.mapq_probe}): {n_removed:,} removed; {len(df_mapq):,} remaining")
-        qc_stats[f"After MAPQ_Probe (>={args.mapq_probe})"] = len(df_mapq)
+        print(f"[qc] Stage 7 — min-mapq-probe (>={args.min_mapq_probe}): {n_removed:,} removed; {len(df_mapq):,} remaining")
+        qc_stats[f"After min-mapq-probe (>={args.min_mapq_probe})"] = len(df_mapq)
     else:
         df_mapq = df_mapq_ts
-        print(f"[qc] Stage 7 — MAPQ_Probe skipped (--mapq-probe {args.mapq_probe}).")
-        qc_stats[f"Stage 7 skipped — MAPQ_Probe (--mapq-probe {args.mapq_probe})"] = len(df_mapq)
+        print("[qc] Stage 7 — min-mapq-probe skipped (--min-mapq-probe off).")
+        qc_stats["Stage 7 skipped — min-mapq-probe (--min-mapq-probe off)"] = len(df_mapq)
 
     # ── Stage 8: CoordDelta ───────────────────────────────────────────────────
     # topseq_only and probe_only have CoordDelta=-1 (no CIGAR coord) and pass through.
     # Only markers with real CoordDelta > threshold are excluded.
     col_coord_delta = f"CoordDelta_{assembly}"
-    if args.coord_delta >= 0:
+    if args.max_coord_delta >= 0:
         if col_coord_delta in df_mapq.columns:
-            exceeds = df_mapq[col_coord_delta] > args.coord_delta
+            exceeds = df_mapq[col_coord_delta] > args.max_coord_delta
             df_coord = df_mapq[~exceeds].copy()
             n_removed = len(df_mapq) - len(df_coord)
-            print(f"[qc] Stage 8 — CoordDelta (delta<={args.coord_delta}): "
-                  f"{n_removed:,} removed (CoordDelta>{args.coord_delta} only); {len(df_coord):,} remaining")
+            print(f"[qc] Stage 8 — max-coord-delta (<={args.max_coord_delta}): "
+                  f"{n_removed:,} removed (CoordDelta>{args.max_coord_delta} only); {len(df_coord):,} remaining")
         else:
-            print(f"[qc] WARNING: {col_coord_delta!r} column not found. Skipping CoordDelta filter.")
+            print(f"[qc] WARNING: {col_coord_delta!r} column not found. Skipping max-coord-delta filter.")
             df_coord = df_mapq
-        qc_stats[f"After CoordDelta filter (delta<={args.coord_delta})"] = len(df_coord)
+        qc_stats[f"After max-coord-delta (<={args.max_coord_delta})"] = len(df_coord)
     else:
         df_coord = df_mapq
-        print(f"[qc] Stage 8 — CoordDelta skipped (--coord-delta {args.coord_delta}).")
-        qc_stats[f"Stage 8 skipped — CoordDelta (--coord-delta {args.coord_delta})"] = len(df_coord)
+        print("[qc] Stage 8 — max-coord-delta skipped (--max-coord-delta off).")
+        qc_stats["Stage 8 skipped — max-coord-delta (--max-coord-delta off)"] = len(df_coord)
     _tag_removed(why_filtered, df_mapq.index, df_coord.index, "stage_8_coord_delta")
 
-    # ── Stage 9: Indels (excluded by default; --keep-indels to include) ───────
-    if not args.keep_indels:
+    # ── Stage 9: Indels (excluded by default; --include-indels to include) ───
+    if not args.include_indels:
         df_noindel = apply_exclude_indels_filter(df_coord).copy()
         n_removed = len(df_coord) - len(df_noindel)
         print(f"[qc] Stage 9 — Indels excluded: {n_removed:,} removed; {len(df_noindel):,} remaining")
@@ -759,12 +849,12 @@ def run_qc(args):
     else:
         df_noindel = df_coord
         hypothetical = len(df_coord) - len(apply_exclude_indels_filter(df_coord))
-        print(f"[qc] Stage 9 — Indels kept (--keep-indels); {hypothetical:,} would have been removed.")
-        qc_stats[f"Stage 9 skipped — Indels (--keep-indels; would remove {hypothetical:,})"] = len(df_noindel)
+        print(f"[qc] Stage 9 — Indels included (--include-indels); {hypothetical:,} would have been removed.")
+        qc_stats[f"Stage 9 skipped — Indels (--include-indels; would remove {hypothetical:,})"] = len(df_noindel)
     _tag_removed(why_filtered, df_coord.index, df_noindel.index, "stage_9_indel_excluded")
 
-    # ── Stage 10: Polymorphic (removed by default; --keep-polymorphic to skip) ─
-    if not args.keep_polymorphic:
+    # ── Stage 10: Polymorphic (removed by default; --include-polymorphic to skip) ─
+    if not args.include_polymorphic:
         poly_set = polymorphic_positions(df_noindel, col_chr, col_pos)
         df_final = df_noindel[~df_noindel.apply(
             lambda r: (r[col_chr], r[col_pos]) in poly_set, axis=1
@@ -778,21 +868,21 @@ def run_qc(args):
         hypothetical = df_noindel.apply(
             lambda r: (r[col_chr], r[col_pos]) in poly_set, axis=1
         ).sum()
-        print(f"[qc] Stage 10 — Polymorphic sites kept (--keep-polymorphic); {hypothetical:,} would have been removed.")
-        qc_stats[f"Stage 10 skipped — Polymorphic (--keep-polymorphic; would remove {hypothetical:,})"] = len(df_final)
+        print(f"[qc] Stage 10 — Polymorphic sites included (--include-polymorphic); {hypothetical:,} would have been removed.")
+        qc_stats[f"Stage 10 skipped — Polymorphic (--include-polymorphic; would remove {hypothetical:,})"] = len(df_final)
     _tag_removed(why_filtered, df_noindel.index, df_final.index, "stage_10_polymorphic")
 
     # ── Stage 11: Ambiguous SNPs (A/T, C/G) — excluded by default ────────────
     df_before_ambig = df_final
-    if not args.keep_ambiguous:
+    if not args.include_ambiguous_snps:
         df_final = apply_exclude_ambiguous_snps_filter(df_before_ambig).copy()
         n_removed = len(df_before_ambig) - len(df_final)
         print(f"[qc] Stage 11 — Ambiguous SNPs excluded: {n_removed:,} removed; {len(df_final):,} remaining")
         qc_stats["After ambiguous-SNP filter"] = len(df_final)
     else:
         hypothetical = len(df_before_ambig) - len(apply_exclude_ambiguous_snps_filter(df_before_ambig))
-        print(f"[qc] Stage 11 — Ambiguous SNPs kept (--keep-ambiguous); {hypothetical:,} would have been removed.")
-        qc_stats[f"Stage 11 skipped — Ambiguous SNPs (--keep-ambiguous; would remove {hypothetical:,})"] = len(df_final)
+        print(f"[qc] Stage 11 — Ambiguous SNPs included (--include-ambiguous-snps); {hypothetical:,} would have been removed.")
+        qc_stats[f"Stage 11 skipped — Ambiguous SNPs (--include-ambiguous-snps; would remove {hypothetical:,})"] = len(df_final)
     _tag_removed(why_filtered, df_before_ambig.index, df_final.index, "stage_11_ambiguous_snp")
 
     # ── Write full-input trace CSV with per-marker WhyFiltered column ────────
