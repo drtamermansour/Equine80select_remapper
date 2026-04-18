@@ -16,35 +16,37 @@ output-dir/
 │   ├── scaffold_resolved_markers.csv            competing alignments resolved by placed-chromosome rule
 │   └── nm_position_resolved_markers.csv         competing alignments resolved by AS / dAS / NM / CoordDelta
 └── qc/                                        step 3 — filter cascade & final outputs
-    ├── matchingSNPs_binary_consistantMapping.{assembly}_map     ★ main output
+    ├── {prefix}_allele_map_{assembly}.tsv                       ★ main output — manifest↔genome allele crosswalk
     ├── {prefix}_remapped_{assembly}.bim                         PLINK BIM
+    ├── {prefix}_remapped_{assembly}.vcf                         final filtered VCF
     ├── {prefix}_remapped_{assembly}_traced.csv                  full manifest + per-marker WhyFiltered column
-    ├── _matchingSNPs.vcf                                        post-indel-filter VCF
-    ├── _matchingSNPs_binary.vcf                                 post-polymorphic-filter VCF
-    ├── _matchingSNPs_binary_consistantMapping.vcf               final filtered VCF
-    ├── polymorphic_positions.txt                                positions removed by the polymorphic filter
     ├── QC_Report.txt                                            per-stage filter counts
-    └── remap_assessment/                                        MAPQ histograms + known-assembly benchmark
+    └── diagnostics/                                             MAPQ histograms + known-assembly benchmark
 ```
 
 ---
 
-## Final map file
+## Allele map (main output)
 
-`matchingSNPs_binary_consistantMapping.{assembly}_map` — tab-separated, **no header**, 8 columns:
+`{prefix}_allele_map_{assembly}.tsv` — tab-separated, **with a header row**, 8 columns.
+This is the pipeline's headline output: a per-marker crosswalk between the
+manifest's original SNP allele encoding and the genomic alleles on the new
+reference, with the decision label needed to translate genotype calls from
+manifest space to genome space.
 
 | # | Column | Description |
 |---|---|---|
 | 1 | `chr` | Chromosome (e.g. `1`, `X`, `Un_NW_019641858v1`) |
 | 2 | `pos` | 1-based base-pair position |
-| 3 | `snpID` | Marker name from the input manifest |
-| 4 | `SNP_alleles` | The two alleles as listed in the manifest's `SNP` column (e.g. `A,G`) |
-| 5 | `genomic_alleles` | The same two alleles, but on the + strand of the reference, in the same order as column 4 |
-| 6 | `SNP_ref_allele` | Which of the SNP-column alleles corresponds to the reference base |
-| 7 | `genomic_ref_allele` | The reference base on the + strand |
+| 3 | `snp_id` | Marker name from the input manifest |
+| 4 | `manifest_alleles` | The two alleles as listed in the manifest's `SNP` column (e.g. `A,G`) |
+| 5 | `genomic_alleles` | The same two alleles on the + strand of the reference, in the same order as column 4 |
+| 6 | `manifest_ref` | Which of the manifest alleles corresponds to the reference base |
+| 7 | `genomic_ref` | The reference base on the + strand |
 | 8 | `decision` | How the manifest's allele convention maps to the genome: `as_is` or `complement` (or `indel_as_is` / `indel_complement` for indels) |
 
-This file is what you typically feed to PLINK2 / Beagle.
+Use it alongside a PLINK-format genotype file to convert calls into VCF-standard
+Ref/Alt space, or feed the PLINK BIM directly to PLINK2 / Beagle.
 
 ---
 
@@ -113,18 +115,13 @@ Use this to audit which filter dropped which markers — see
 
 ---
 
-## VCFs
+## VCF
 
-Three VCFs are written, each a stricter subset:
-
-| File | Contents |
-|---|---|
-| `_matchingSNPs.vcf` | After Stage 9 (indel exclusion), before polymorphic filter |
-| `_matchingSNPs_binary.vcf` | After Stage 10 (polymorphic) |
-| `_matchingSNPs_binary_consistantMapping.vcf` | Final filtered set (kept under this name for backward compatibility — identical in content to the binary VCF) |
-
-Indels in the VCF use VCF-standard anchor-base encoding (e.g.
-`pos=mapinfo-1, REF=anchor+gref, ALT=anchor+galt`).
+`{prefix}_remapped_{assembly}.vcf` — the final filtered marker set in VCF v4.3
+format. One record per marker surviving all 11 QC stages; chromosome, position,
+marker name (ID), REF, and ALT are populated; QUAL/FILTER/INFO are `.`. Indels
+use VCF-standard anchor-base encoding (i.e. `pos = mapinfo − 1`,
+`REF = anchor + gref`, `ALT = anchor + galt`).
 
 ---
 

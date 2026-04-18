@@ -9,8 +9,8 @@ pitfalls, file paths, and test commands.
 Pipeline that remaps Illumina genotyping arrays between reference assemblies.
 Built for **Equine80select v1 (EquCab2) → EquCab3** (~82 k SNPs).
 
-Headline output: `qc/matchingSNPs_binary_consistantMapping.{assembly}_map`
-(8-column TSV, no header — see `docs/output_formats.md`).
+Headline output: `qc/{prefix}_allele_map_{assembly}.tsv`
+(8-column headered TSV — see `docs/output_formats.md`).
 
 ## File map
 

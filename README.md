@@ -28,8 +28,9 @@ For every marker in the input manifest, the pipeline produces:
   removed it from the final output.
 
 The headline output is a tab-separated file —
-`matchingSNPs_binary_consistantMapping.{assembly}_map` — that you can feed
-directly to PLINK2 or Beagle.
+`{prefix}_allele_map_{assembly}.tsv` — a per-marker crosswalk between the
+manifest's original SNP alleles and the new-assembly genomic alleles, plus a
+PLINK BIM / final VCF you can feed directly to PLINK2 or Beagle.
 
 ---
 
@@ -70,10 +71,10 @@ results/
 │   ├── {prefix}_remapped_{assembly}.csv            full marker table with quality columns
 │   └── remapping_Report.txt                        per-marker decision summary
 └── qc/                                             ← step 2: quality filtering
-    ├── matchingSNPs_binary_consistantMapping.{assembly}_map   ★ main output
+    ├── {prefix}_allele_map_{assembly}.tsv          ★ main output — allele crosswalk
     ├── {prefix}_remapped_{assembly}.bim            PLINK BIM
+    ├── {prefix}_remapped_{assembly}.vcf            final filtered VCF
     ├── {prefix}_remapped_{assembly}_traced.csv     per-marker filter trace
-    ├── _matchingSNPs_binary_consistantMapping.vcf  final VCF
     └── QC_Report.txt                               per-stage filter counts
 ```
 

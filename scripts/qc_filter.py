@@ -10,14 +10,12 @@ canonical stage order.
 
 Outputs under ``--output-dir``:
 
-  _matchingSNPs.vcf                                        Post-indel-filter VCF template
-  _matchingSNPs_binary.vcf                                 Final filtered VCF
-  _matchingSNPs_binary_consistantMapping.vcf               Identical to binary (kept for compat)
+  {prefix}_allele_map_{assembly}.tsv                       Manifest <-> genome allele crosswalk (main output)
   {prefix}_remapped_{assembly}.bim                         PLINK BIM
+  {prefix}_remapped_{assembly}.vcf                         Final filtered VCF
   {prefix}_remapped_{assembly}_traced.csv                  Full input + WhyFiltered column
-  matchingSNPs_binary_consistantMapping.{assembly}_map     Final map (main pipeline output)
   QC_Report.txt                                            Per-stage counts
-  remap_assessment/                                        MAPQ histograms + known-assembly benchmark
+  diagnostics/                                             MAPQ histograms + known-assembly benchmark
 
 Usage:
   python scripts/qc_filter.py \\
@@ -179,12 +177,12 @@ def extract_ref_alleles(pos_vcf, ref_fasta, ref_vcf):
 
 def build_final_map(df_final, assembly, map_path):
     """
-    Writes matchingSNPs_binary_consistantMapping.{assembly}_map with columns:
-      chr  pos  snpID  SNP_alleles  genomic_alleles  SNP_ref_allele  genomic_ref_allele  decision
+    Writes {prefix}_allele_map_{assembly}.tsv with a header row and columns:
+      chr  pos  snp_id  manifest_alleles  genomic_alleles  manifest_ref  genomic_ref  decision
 
-    SNP_alleles are from the manifest SNP column (e.g. A,G).
+    manifest_alleles are from the manifest SNP column (e.g. A,G).
     genomic_alleles are the + strand remapped alleles.
-    decision ('as_is' or 'complement') is inferred by matching SNP alleles to genomic alleles —
+    decision ('as_is' or 'complement') is inferred by matching manifest alleles to genomic alleles —
     direct match first, then complement match. This replaces the old XOR-based approach.
     """
     col_chr    = f"Chr_{assembly}"
@@ -268,7 +266,9 @@ def build_final_map(df_final, assembly, map_path):
         )
 
     with open(map_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write("chr\tpos\tsnp_id\tmanifest_alleles\tgenomic_alleles\tmanifest_ref\tgenomic_ref\tdecision\n")
+        if lines:
+            f.write("\n".join(lines) + "\n")
 
     return errors
 
@@ -295,7 +295,7 @@ def benchmark_known_assembly(df, assembly, assessment_dir):
     """
     For markers where the original assembly matches the target assembly (GenomeBuild == assembly
     major version number, e.g. '3' for EquCab3), compare original Chr:Pos to remapped Chr:Pos.
-    Writes a mismatch report to remap_assessment/equCab3.mismatches.
+    Writes a mismatch report to diagnostics/{assembly}.mismatches.
     """
     col_chr = f"Chr_{assembly}"
     col_pos = f"MapInfo_{assembly}"
@@ -581,7 +581,7 @@ def run_qc(args):
     os.makedirs(out_dir, exist_ok=True)
     temp_dir = os.path.abspath(args.temp_dir) if args.temp_dir else out_dir
     os.makedirs(temp_dir, exist_ok=True)
-    assessment_dir = os.path.join(out_dir, "remap_assessment")
+    assessment_dir = os.path.join(out_dir, "diagnostics")
     os.makedirs(assessment_dir, exist_ok=True)
 
     # Derive prefix from input filename if not given
@@ -763,36 +763,9 @@ def run_qc(args):
         qc_stats[f"Stage 9 skipped — Indels (--keep-indels; would remove {hypothetical:,})"] = len(df_noindel)
     _tag_removed(why_filtered, df_coord.index, df_noindel.index, "stage_9_indel_excluded")
 
-    # Write _matchingSNPs.vcf (post-indel-filter, pre-polymorphic)
-    match_vcf = os.path.join(out_dir, "_matchingSNPs.vcf")
-    ref_fasta2 = pysam.FastaFile(args.reference)
-    try:
-        with open(match_vcf, "w") as f:
-            with open(args.vcf_contigs) as vc:
-                f.write("##fileformat=VCFv4.3\n")
-                f.write(vc.read())
-            f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
-            for _, row in df_noindel.iterrows():
-                gref = row["_gref"]
-                galt = row["_galt"]
-                pos  = int(row[col_pos])
-                if gref == "" or galt == "":
-                    vcf_pos, vcf_ref, vcf_alt = make_anchor_alleles(
-                        ref_fasta2, row[col_chr], pos, gref, galt
-                    )
-                else:
-                    vcf_pos, vcf_ref, vcf_alt = pos, gref, galt
-                f.write(f"{row[col_chr]}\t{vcf_pos}\t{row['Name']}\t{vcf_ref}\t{vcf_alt}\t.\t.\t.\n")
-    finally:
-        ref_fasta2.close()
-
     # ── Stage 10: Polymorphic (removed by default; --keep-polymorphic to skip) ─
     if not args.keep_polymorphic:
         poly_set = polymorphic_positions(df_noindel, col_chr, col_pos)
-        poly_path = os.path.join(out_dir, "polymorphic_positions.txt")
-        with open(poly_path, "w") as f:
-            for chr_, pos in poly_set:
-                f.write(f"{chr_},{pos}\n")
         df_final = df_noindel[~df_noindel.apply(
             lambda r: (r[col_chr], r[col_pos]) in poly_set, axis=1
         )].copy()
@@ -829,21 +802,29 @@ def run_qc(args):
     df_trace.to_csv(trace_path, index=False)
     print(f"[qc] Per-marker trace written: {trace_path}")
 
-    # Write _matchingSNPs_binary.vcf
-    binary_vcf = os.path.join(out_dir, "_matchingSNPs_binary.vcf")
-    final_names = set(df_final["Name"])
-    with open(match_vcf) as src, open(binary_vcf, "w") as f:
-        for line in src:
-            if line.startswith("#"):
-                f.write(line)
-                continue
-            if line.split("\t")[2] in final_names:
-                f.write(line)
-
-    # Write _matchingSNPs_binary_consistantMapping.vcf (identical to binary — consistency filter removed)
-    consist_vcf = os.path.join(out_dir, "_matchingSNPs_binary_consistantMapping.vcf")
-    with open(binary_vcf) as src, open(consist_vcf, "w") as f:
-        f.write(src.read())
+    # ── Final filtered VCF (post-all-filters) ────────────────────────────────
+    vcf_path = os.path.join(out_dir, f"{prefix}_remapped_{assembly}.vcf")
+    ref_fasta_vcf = pysam.FastaFile(args.reference)
+    try:
+        with open(vcf_path, "w") as f:
+            with open(args.vcf_contigs) as vc:
+                f.write("##fileformat=VCFv4.3\n")
+                f.write(vc.read())
+            f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+            for _, row in df_final.iterrows():
+                gref = row["_gref"]
+                galt = row["_galt"]
+                pos  = int(row[col_pos])
+                if gref == "" or galt == "":
+                    vcf_pos, vcf_ref, vcf_alt = make_anchor_alleles(
+                        ref_fasta_vcf, row[col_chr], pos, gref, galt
+                    )
+                else:
+                    vcf_pos, vcf_ref, vcf_alt = pos, gref, galt
+                f.write(f"{row[col_chr]}\t{vcf_pos}\t{row['Name']}\t{vcf_ref}\t{vcf_alt}\t.\t.\t.\n")
+    finally:
+        ref_fasta_vcf.close()
+    print(f"[qc] VCF written: {vcf_path}")
 
     # ── PLINK BIM file ───────────────────────────────────────────────────────
     # For indel markers, apply anchor-base encoding so PLINK sees VCF-style alleles.
@@ -871,14 +852,14 @@ def run_qc(args):
     bim.to_csv(bim_path, sep="\t", header=False, index=False)
     print(f"[qc] BIM written: {bim_path}")
 
-    # ── Final map file ───────────────────────────────────────────────────────
-    map_path = os.path.join(out_dir, f"matchingSNPs_binary_consistantMapping.{assembly}_map")
-    print("[qc] Building final map file...")
+    # ── Final allele-map file (main output) ──────────────────────────────────
+    map_path = os.path.join(out_dir, f"{prefix}_allele_map_{assembly}.tsv")
+    print("[qc] Building allele-map file...")
     errors = build_final_map(df_final, assembly, map_path)
     if errors:
-        print(f"[qc] WARNING: {errors} markers could not be assigned to map file (written as 'Error' lines).")
+        print(f"[qc] WARNING: {errors} markers could not be assigned to allele map (written as 'Error' lines).")
     else:
-        print(f"[qc] Final map file written with 0 errors: {map_path}")
+        print(f"[qc] Allele-map file written with 0 errors: {map_path}")
 
     # ── QC Report ────────────────────────────────────────────────────────────
     # Stage 11 already surfaces the ambiguous-SNP count (either as "removed" in

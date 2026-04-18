@@ -48,12 +48,12 @@
 #     remapping_Report.txt                        Alignment and resolution summary
 #     ambiguous_markers.csv                       Markers with ambiguous mapping
 #   qc/
-#     matchingSNPs_binary_consistantMapping.{assembly}_map  Final map (main output)
+#     {prefix}_allele_map_{assembly}.tsv          Allele-map: manifest<->genome crosswalk (main output)
 #     {prefix}_remapped_{assembly}.bim            PLINK BIM format
+#     {prefix}_remapped_{assembly}.vcf            Final filtered VCF
 #     {prefix}_remapped_{assembly}_traced.csv     Full input with per-marker WhyFiltered column
-#     _matchingSNPs_binary_consistantMapping.vcf  VCF (final filtered set)
 #     QC_Report.txt                               Marker counts at each filter stage
-#     remap_assessment/                           MAPQ histograms and benchmarks
+#     diagnostics/                                MAPQ histograms and benchmarks
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -209,7 +209,7 @@ fi
 echo ""
 echo "========================================================"
 echo " Pipeline complete."
-echo " Main output: $QC_DIR/matchingSNPs_binary_consistantMapping.${ASSEMBLY}_map"
+echo " Main output: $QC_DIR/${PREFIX}_allele_map_${ASSEMBLY}.tsv"
 echo " QC report:   $QC_DIR/QC_Report.txt"
 echo " Remap CSV:   $REMAPPED_CSV"
 echo "========================================================"
