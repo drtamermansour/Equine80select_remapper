@@ -56,7 +56,17 @@ Grouped per `--help`:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--preset` | none | Tune the strictness + threshold + include/exclude flags as a bundle: `strict` / `default` / `permissive`. Individual flags passed alongside `--preset` override whatever the preset set. |
+| `--preset` | none | Tune the strictness + threshold + include/exclude flags as a bundle: `strict` / `default` / `permissive`. Individual flags passed alongside `--preset` override whatever the preset set. See the table below. |
+
+### What each `--preset` sets
+
+| Preset | `--min-anchor` | `--tie-policy` | `--min-refalt-confidence` | `--min-mapq-topseq` | `--min-mapq-probe` | `--max-coord-delta` | `--include-indels` | `--include-polymorphic` | `--include-ambiguous-snps` |
+|---|---|---|---|---|---|---|---|---|---|
+| `strict` | `dual` | `unique` | `high` | `30` | `20` | `1` | off | off | off |
+| `default` | `topseq` | `resolved` | `moderate` | `30` | `off` | `off` | off | off | off |
+| `permissive` | `probe` | `avoid_scaffolds` | `low` | `off` | `off` | `off` | **on** | **on** | **on** |
+
+Omitting `--preset` is equivalent to `--preset default` — the values in that row are simply the flag defaults. Any individual flag you pass on the command line overrides the corresponding cell in the preset row.
 
 For HPC use:
 

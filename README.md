@@ -109,6 +109,7 @@ Topic-focused guides for users and developers:
 | [docs/qc_filters.md](docs/qc_filters.md) | The 11-stage quality-control cascade explained |
 | [docs/output_formats.md](docs/output_formats.md) | All output files and their columns |
 | [docs/benchmarking.md](docs/benchmarking.md) | How to measure remapping accuracy against a known-good manifest |
+| [docs/benchmarking_vs_liftover.md](docs/benchmarking_vs_liftover.md) | Head-to-head benchmark vs. UCSC liftOver and CrossMap |
 | [docs/scaffold_filtering.md](docs/scaffold_filtering.md) | Pre-pipeline step to clean unplaced-scaffold haplotypes from the reference |
 
 Deeper dives into specific concepts:

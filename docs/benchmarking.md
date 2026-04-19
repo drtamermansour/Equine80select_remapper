@@ -8,12 +8,13 @@ accurate the remapping was.
 This is exactly what the original Equine80select v1 (EquCab2) →
 Equine80select v2 (EquCab3) project did.
 
-## The two benchmark scripts
+## The benchmark scripts
 
 | Script | What it does |
 |---|---|
 | [`scripts/benchmark_compare.py`](../scripts/benchmark_compare.py) | The main benchmark. Compares the remapped CSV against a ground-truth manifest position-by-position. With `--reference`, also runs an explanatory layer that classifies each non-correct marker. With `--traced`, adds a QC-filtration impact section. |
 | [`scripts/benchmark_cigar_vs_probe.py`](../scripts/benchmark_cigar_vs_probe.py) | A diagnostic three-way comparison: probe-CIGAR vs TopSeq-CIGAR vs the final chosen coordinate. Useful for tuning the CoordSource decision rule. |
+| [`scripts/benchmark/run_benchmark_vs_liftover.sh`](../scripts/benchmark/run_benchmark_vs_liftover.sh) | **Head-to-head vs. UCSC liftOver and CrossMap** on the equCab2→equCab3 example. See [docs/benchmarking_vs_liftover.md](benchmarking_vs_liftover.md). |
 
 ## Quick run
 
