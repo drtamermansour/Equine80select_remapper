@@ -62,8 +62,11 @@ stands out immediately.
 
 The same section also prints:
 
-- **Breakdown by marker type** — the headline counts split by `standard`
-  vs `AFFX` (Affymetrix controls) vs `ilmndup` (Illumina duplicates).
+- **Breakdown by marker type** — the headline counts split by three
+  categories, identified by the marker `Name`: `AFFX` (name starts with
+  `Affx-`, Affymetrix controls), `ilmndup` (the substring `ilmndup` appears
+  in the name, Illumina duplicate markers — multiple probes at the same
+  locus), and `standard` (everything else).
 - **Coordinate offset distribution** — for `coord_off` markers only, the
   off-by-N histogram (`= 1 bp`, `2–10 bp`, `11–50 bp`, `51 bp`, `52+ bp`).
   The `51 bp` row is a sentinel for the old probe-strand bug; it should

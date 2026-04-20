@@ -230,7 +230,10 @@ def classify_explanatory(row) -> str:
         if result == "wrong_chr":
             return "pipeline_wrong_chr"
         return "pipeline_wrong_locus"
-    return "unresolved"
+    # R-BM-8: "uncategorized" was previously "unresolved" — colliding visually with the
+    # HEADLINE `locus_unresolved` benchmark result category even though the two are
+    # unrelated (one is a verdict fallback, the other is a pipeline-decision outcome).
+    return "uncategorized"
 
 
 # ── COMPARISON ────────────────────────────────────────────────────────────────
@@ -821,8 +824,8 @@ def format_three_d_accuracy_table(three_d: dict) -> str:
         "═" * W,
         "3-Dimension Accuracy Breakdown  (anchor × tie × benchmark outcome)",
         f"  {'anchor / tie':<28} {'correct':>10} {'coord_off':>10}"
-        f" {'wrong_chr':>10} {'other':>7} {'Total':>8} {'Acc%':>7}",
-        "  " + "─" * 84,
+        f" {'wrong_chr':>10} {'unmapped/other':>15} {'Total':>8} {'Acc%':>7}",
+        "  " + "─" * 92,
     ]
 
     grand = {cat: 0 for cat in CATEGORIES}
@@ -847,7 +850,7 @@ def format_three_d_accuracy_table(three_d: dict) -> str:
             acc        = 100.0 * (correct + strand_bad) / total
             lines.append(
                 f"    tie={tie:<24} {correct:>10,} {coord_off:>10,}"
-                f" {wrong_chr:>10,} {other:>7,} {total:>8,} {acc:>6.1f}%"
+                f" {wrong_chr:>10,} {other:>15,} {total:>8,} {acc:>6.1f}%"
             )
             for cat in CATEGORIES:
                 grand[cat] += d[cat]
@@ -857,9 +860,9 @@ def format_three_d_accuracy_table(three_d: dict) -> str:
     grand_acc    = 100.0 * (grand["correct"] + grand_strand) / grand_total if grand_total else 0.0
     grand_other  = grand["unmapped"] + grand["locus_unresolved"] + grand_strand
     lines += [
-        "  " + "─" * 84,
+        "  " + "─" * 92,
         f"  {'Total':<28} {grand['correct']:>10,} {grand['coord_off']:>10,}"
-        f" {grand['wrong_chr']:>10,} {grand_other:>7,} {grand_total:>8,} {grand_acc:>6.1f}%",
+        f" {grand['wrong_chr']:>10,} {grand_other:>15,} {grand_total:>8,} {grand_acc:>6.1f}%",
     ]
     return "\n".join(lines)
 
@@ -950,6 +953,9 @@ def format_qc_impact_section(impact: dict) -> list[str]:
     w("QC FILTRATION IMPACT")
     w(f"  Markers surviving all QC filters: {impact['passed_n']:>8,}")
     w(f"    of which correct:               {impact['passed_correct']:>8,}  ({impact['passed_accuracy_pct']:5.1f}%)")
+    # R-BM-10: this section's percentages use post-QC denominators, not the headline's.
+    # Compare against HEADLINE COUNTS's correct% to see the QC lift.
+    w("    (percentages in this section use post-QC denominators; compare against HEADLINE to see QC lift)")
     w()
 
     # Confusion matrix
@@ -1111,7 +1117,10 @@ def write_report(
             ("offset = 1 bp",                      offsets == 1),
             ("offset = 2–10 bp",                   (offsets >= 2) & (offsets <= 10)),
             ("offset = 11–50 bp",                  (offsets >= 11) & (offsets <= 50)),
-            ("offset = 51 bp (probe-strand bug)",  offsets == 51),
+            # R-BM-12: the 51-bp bucket is a regression sentinel for a legacy
+            # probe-strand bug (get_probe_coordinate mixed probe and TopSeq strands,
+            # offsetting coordinates by exactly one probe length). Non-zero = alarm.
+            ("offset = 51 bp (regression sentinel — legacy probe-strand bug)", offsets == 51),
             ("offset = 52+ bp",                    offsets >= 52),
         ]
         for label, mask in buckets:
@@ -1141,7 +1150,9 @@ def write_report(
     if three_d is not None:
         w("3-DIMENSION ACCURACY BREAKDOWN")
         w("  Acc% = (correct + coord_correct_strand_wrong) / Total  [coord-accurate]")
-        w("  other = unmapped + locus_unresolved + coord_correct_strand_wrong")
+        # R-BM-9: name what "unmapped/other" bundles; in typical runs it IS just unmapped.
+        w("  unmapped/other = unmapped + locus_unresolved + coord_correct_strand_wrong")
+        w("                   (in typical runs locus_unresolved and coord_correct_strand_wrong are 0, so this column is just unmapped)")
         w()
         w(format_three_d_accuracy_table(three_d))
         w()
