@@ -1018,7 +1018,7 @@ class DecisionCounters:
     final_unmapped:               int = 0
     final_unresolved:             int = 0
 
-    def format_summary(self, three_d=None) -> str:
+    def format_summary(self, three_d=None, assembly: str = None, manifest_path: str = None) -> str:
         W = 60
         SEP = "\u2500" * W
         lines = []
@@ -1059,13 +1059,20 @@ class DecisionCounters:
         total_check       = (self.valid_pair_found + topseq_only_total
                              + probe_only_total + self.final_unmapped)
 
-        lines.append("")
+        # Header — mirrors QC_Report.txt (R-RM-5). Assembly / input shown only when provided
+        # by the caller (backward-compat for unit tests that call format_summary directly).
+        if assembly is not None:
+            lines.append(f"Remapping Report — assembly: {assembly}")
+        if manifest_path is not None:
+            lines.append(f"Input: {manifest_path}")
+        if assembly is not None or manifest_path is not None:
+            lines.append("-" * W)
         lines.append("=== REMAPPING DECISION SUMMARY ===")
         lines.append(f"  {'Total markers loaded:':<{W - 2}} {self.total_loaded:>8,}")
         lines.append("")
 
         # \u2500\u2500 Step 1 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        hdr("Step 1: Alignment Status (before filtering)")
+        hdr("Step 1: Alignment Status (alignment-pattern groups, before filtering)")
         row("gp1 \u2013 both TopSeq alleles + probe:",   self.align_gp1)
         row("gp2 \u2013 one TopSeq allele  + probe:",    self.align_gp2)
         row("gp3 \u2013 both TopSeq alleles, no probe:", self.align_gp3)
@@ -1087,7 +1094,22 @@ class DecisionCounters:
             row(f"\u2502  tie={_t}:", _nonzero("topseq_n_probe", _t), indent=3)
 
         # \u2500\u2500 no-valid-triple branches \u2500\u2500
+        # R-RM-4: annotate the sub-tree arithmetic so the reader doesn't need a calculator.
+        ts_rescue_total = (self.final_topseq_only + self.topseq_rescue_refalt_unresolved
+                           + self.topseq_locus_unresolved_no_probe_rescue
+                           + self.topseq_rescue_failed_softclip)
+        pb_rescue_total = (self.final_probe_only + self.probe_rescue_refalt_unresolved
+                           + self.final_probe_rescue_locus_unresolved)
         row("No valid triple (total):", self.no_valid_pair)
+        lines.append(
+            f"    = {self.final_topseq_only:,} resolved + {self.topseq_rescue_refalt_unresolved:,} refalt_unresolved "
+            f"+ {self.topseq_locus_unresolved_no_probe_rescue:,} locus_unresolved "
+            f"+ {self.topseq_rescue_failed_softclip:,} soft-clip (TopSeq rescue: {ts_rescue_total:,})"
+        )
+        lines.append(
+            f"      + {self.final_probe_only:,} resolved + {self.probe_rescue_refalt_unresolved:,} refalt_unresolved "
+            f"+ {self.final_probe_rescue_locus_unresolved:,} locus_unresolved (Probe rescue: {pb_rescue_total:,})"
+        )
         lines.append("    TopSeq rescue (gp1\u2013gp4, anchor=topseq_only, coord=TopSeq CIGAR walk):")
         row("\u251c\u2500 tie=unique|*_resolved \u2192 Ref/Alt assigned (Chr\u22600):", self.final_topseq_only, indent=2)
         row("\u2502  tie=unique:",            self.topseq_rescue_tie_unique,   indent=3)
@@ -1120,18 +1142,26 @@ class DecisionCounters:
         )
         lines.append("")
         lines.append("  MAPQ Distribution (min of winning TopSeq+probe pair):")
+        lines.append(
+            f"    (denominator {mapq_total:,} = topseq_n_probe Chr\u22600 \u2014 MAPQ is only "
+            f"reported for markers that got Ref/Alt assigned)"
+        )
         row("MAPQ = 60:",   self.mapq_60,    indent=1)
         row("MAPQ 30\u201359:", self.mapq_30_59, indent=1)
         row("MAPQ  1\u201329:", self.mapq_1_29,  indent=1)
         row("MAPQ = 0:",    self.mapq_0,     indent=1)
         lines.append("")
         lines.append(f"  CoordDelta Distribution (of {coord_diag_total:,} markers):")
+        lines.append(
+            f"    (denominator {coord_diag_total:,} = all topseq_n_probe regardless of Ref/Alt "
+            f"outcome \u2014 CoordDelta is computed before Ref/Alt determination)"
+        )
         row("CoordDelta = 0    (probe = cigar):",              self.coord_delta_0,    indent=1)
         row("CoordDelta = 1    (small diff \u2192 probe_cigar used):",  self.coord_delta_1,    indent=1)
         row("CoordDelta \u2265 2    (large diff \u2192 topseq_cigar used):", self.coord_delta_ge2,  indent=1)
         row("CoordDelta = \u22121   (SNP in soft clip, no topseq cigar):", self.coord_delta_neg1, indent=1)
         lines.append("")
-        lines.append("  CoordSource Breakdown:")
+        lines.append("  CoordSource Breakdown (same denominator as CoordDelta):")
         row("probe_cigar  (MapInfo = probe CIGAR coord):",  self.coord_source_probe, indent=1)
         row("topseq_cigar (MapInfo = TopSeq CIGAR coord):", self.coord_source_cigar, indent=1)
         lines.append("")
@@ -1144,6 +1174,14 @@ class DecisionCounters:
         # \u2500\u2500 3D summary table \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         lines.append("\u2550" * W)
         lines.append("3-Dimension Summary (anchor \u00d7 tie \u00d7 Ref/Alt outcome)")
+        lines.append("NM_* = any RefAltMethodAgreement value starting with NM_ (NM_match, NM_validated,")
+        lines.append("       NM_N/A, NM_tied, NM_only, NM_unmatch, NM_corrected — see algorithm_overview.md)")
+        # R-RM-3: anchor=N/A row below combines two distinct failure modes (unmapped vs soft-clip).
+        lines.append(
+            f"Note: the anchor=N/A row totals {self.align_unmapped + self.topseq_rescue_failed_softclip:,} "
+            f"= {self.align_unmapped:,} unmapped + {self.topseq_rescue_failed_softclip:,} "
+            f"SNP-in-soft-clip — see Step 2 for the breakdown."
+        )
         if three_d is not None:
             ANCHOR_ORDER = ["topseq_n_probe", "topseq_only", "probe_only", "N/A"]
             TIE_ORDER    = ["unique", "AS_resolved", "dAS_resolved", "NM_resolved",
@@ -1856,11 +1894,14 @@ def run_remapping(args):
             rb = "NM_*" if r.startswith("NM_") else r
             three_d[(a, t)][rb] += 1
 
-        summary = counters.format_summary(three_d)
+        summary = counters.format_summary(three_d, assembly=assembly, manifest_path=args.manifest)
         print(summary)
         report_path = os.path.join(out_dir, "remapping_Report.txt")
+        # R-RM-6: strip a leading blank line when writing to disk. stdout keeps the separator
+        # (to space the report away from log noise), but the file itself should not.
+        disk_summary = summary.lstrip("\n")
         with open(report_path, "w") as f:
-            f.write(summary + "\n")
+            f.write(disk_summary + "\n")
         print(f"[remap] Remapping report: {report_path}")
 
     finally:

@@ -44,20 +44,43 @@ Three layers of detail, each opt-in via the corresponding flag:
 
 ### 1. Headline (always)
 
+Six categories; numbers are from an example run and will vary with your data:
+
 ```
-correct                 81,943 ( 99.7%)
-coord_off                  114 (  0.1%)
-wrong_chr                   31 (  0.0%)
-unmapped                   134 (  0.2%)
+HEADLINE COUNTS  (of 82,222 benchmarked markers)
+  correct                           81,964  ( 99.7%)
+  coord_correct_strand_wrong             0  (  0.0%)
+  coord_off                            104  (  0.1%)
+  wrong_chr                             21  (  0.0%)
+  unmapped                             133  (  0.2%)
+  locus_unresolved                       0  (  0.0%)
 ```
 
-Plus a 3-dimension breakdown by `anchor × tie × benchmark result`.
+`coord_correct_strand_wrong` and `locus_unresolved` are typically zero
+under the default preset — they're kept in the output so a non-zero value
+stands out immediately.
+
+The same section also prints:
+
+- **Breakdown by marker type** — the headline counts split by `standard`
+  vs `AFFX` (Affymetrix controls) vs `ilmndup` (Illumina duplicates).
+- **Coordinate offset distribution** — for `coord_off` markers only, the
+  off-by-N histogram (`= 1 bp`, `2–10 bp`, `11–50 bp`, `51 bp`, `52+ bp`).
+  The `51 bp` row is a sentinel for the old probe-strand bug; it should
+  read `0` in a clean run.
+- **Accuracy stratified by `CoordDelta`** — the `correct` rate within each
+  CoordDelta bucket (0, 1, 2–10, > 10, −1). Useful for judging whether
+  `max-coord-delta` thresholds are helping or hurting.
+- **3-Dimension accuracy breakdown** — `anchor × tie × benchmark result`.
+  Shows where accuracy drops off (e.g. `AS_resolved` subclasses).
 
 ### 2. Explanatory verdict (with `--reference`)
 
 For each non-correct marker, the script extracts ~20 bp flanking context from
 the reference and tries to match it against the manifest's `TopGenomicSeq`.
-This produces a verdict explaining *who* is wrong:
+This produces a verdict explaining *who* is wrong. The report's
+**`EXPLANATORY VERDICTS (non-correct markers only)`** section lists the
+counts sorted by frequency (descending):
 
 | Verdict | Meaning |
 |---|---|

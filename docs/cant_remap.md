@@ -1,11 +1,19 @@
 # Why Some Markers Can't Be Re-mapped (Or Shouldn't Be)
 
-Out of 82,222 benchmarked markers in the v2 manifest → EquCab3 run, **258 of
-the 269 non-correct markers cannot be fixed by a pipeline change**. This
-document explains each bucket and why a fix is either impossible or inadvisable.
+Out of 82,222 benchmarked markers in the v2 manifest → EquCab3 run,
+**258 are non-correct**. The bulk of these cannot be fixed by a pipeline
+change. This document explains each bucket and why a fix is either
+impossible or inadvisable.
 
-The remaining 11 non-correct markers are cases where the *manifest* is wrong,
-not the pipeline — see `docs/why_we_right.md`.
+A small number of non-correct markers are cases where the *manifest* is
+wrong, not the pipeline — see `docs/why_we_right.md`.
+
+> **Note:** the per-bucket counts below are from an earlier run (headline
+> total: 269). They need a refresh pass against the current
+> `results_E80selv2_to_equCab3noAlt_noFilters` run (258 non-correct) —
+> individual markers move between buckets when the reference changes
+> (alt-haplotype removal, etc.). The shape of the argument (reference
+> divergence, multi-mapping at MAPQ=0, duplicate loci) does not change.
 
 ## How these categories were derived
 
@@ -122,10 +130,12 @@ CIGAR", which was correct on average (final 98.7% vs probe-alone 98.0%)
 but wrong for a small subset of SNVs whose TopSeq CIGARs had minimap2
 gaps placed ambiguously in flanking repeats. The cascade now detects
 this signature (TopSeq I/D within 5 bp of `target_idx`) and routes those
-markers to `probe_cigar` without affecting the majority. Ten markers
-across delta buckets 2, 3, 4, and 10 moved from `pipeline_wrong_manifest_right`
-to `correct`; empirical regression risk for SNVs was zero (no
-TopSeq-correct SNVs carried a nearby I/D).
+markers to `probe_cigar` without affecting the majority (see
+[algorithm_overview.md § Coordinate selection](algorithm_overview.md#coordinate-selection-when-both-probe-and-topseq-agree),
+`I/D within 5 bp of target_idx` row). Ten markers across delta buckets 2,
+3, 4, and 10 moved from `pipeline_wrong_manifest_right` to `correct`;
+empirical regression risk for SNVs was zero (no TopSeq-correct SNVs
+carried a nearby I/D).
 
 ---
 
@@ -184,16 +194,24 @@ coordinates round-trip to each other.
 
 ## Summary
 
-Of 82,222 benchmarked markers:
+Of 82,222 benchmarked markers, roughly 99.7% are correct and the remaining
+~258 are non-correct (exact number depends on the reference used — e.g.
+258 on alt-haplotype-cleaned EquCab3). The non-correct markers fall into
+five buckets, dominated by reference-sequence divergence:
 
-- **81,953 (99.7%) correct** — full agreement on coordinate, strand, alleles.
-- **269 non-correct:** 
-  - 11 the manifest is wrong, we're right (`docs/why_we_right.md`).
-  - 47 MAPQ=0 multi-mappers at the right locus but refused by the RefAlt-ambiguity filter (by design).
-  - ~2 residual placement errors (`topseq_only` rescue picking a wrong locus); the small-delta CoordSource-heuristic cases were rescued by the indel-adjacency selection rule (see the 45-case section).
-  - 44 ambiguous duplicate loci (pre-pipeline alt-haplotype scaffold removal can help 22 of these).
-  - 169 fundamental reference-sequence divergence — the DNA that the manifest describes no longer exists in the EquCab3 reference.
+- A small minority (order ~10) where the manifest is wrong, we're right
+  (`docs/why_we_right.md`).
+- Tens of MAPQ=0 multi-mappers at the right locus but refused by the
+  RefAlt-ambiguity filter (by design).
+- A handful of residual placement errors (`topseq_only` rescue picking a
+  wrong locus); the small-delta CoordSource-heuristic cases were rescued
+  by the indel-adjacency selection rule (see the 45-case section above).
+- Tens of ambiguous duplicate-locus cases (pre-pipeline alt-haplotype
+  scaffold removal can address the placed-chromosome-vs-unplaced-scaffold
+  subset).
+- The remainder — fundamental reference-sequence divergence where the DNA
+  that the manifest describes no longer exists in the EquCab3 reference.
 
-The dominant non-correct category — 169 reference-divergence cases — is a
+The dominant non-correct category is always reference-divergence — a
 property of the manifest-reference pair, not the pipeline. No code change
 fixes sequences that aren't there.

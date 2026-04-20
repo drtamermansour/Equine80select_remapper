@@ -277,7 +277,9 @@ def print_delta_stratification(probe_df, cigar_df, final_df, remapped_df, main_d
     def _row(label, c, indent=0):
         if c is None:
             return
-        prefix = "  " * indent + label
+        # R-CP-3: SNV/indel sub-rows get 4-space indent (vs bucket rows at 0) to emphasise
+        # that they are components of the bucket total above.
+        prefix = ("    " if indent else "") + label
         print(f"  {prefix:<{label_w}}  {c['n']:>6,}"
               f"  {_fmt(c['probe'],     c['n']):>{col_w}}"
               f"  {_fmt(c['cigar'],     c['n']):>{col_w}}"
@@ -338,8 +340,11 @@ def main():
 
         print(f"{'='*96}")
         print("ACCURACY BY COORD_DELTA BUCKET  (correct count only)")
-        print("  CoordDelta = |probe_cigar_coord − topseq_cigar_coord|; "
-              "−1 = delta unavailable (topseq_only has no probe; probe_only has no TopSeq)")
+        # R-CP-1: unified CoordDelta=-1 wording shared with benchmark_compare.py.
+        print("  CoordDelta = |probe_cigar_coord − topseq_cigar_coord|; -1 whenever one of the two")
+        print("  CIGARs is unavailable (SNP in soft-clipped TopSeq, or topseq_only, or probe_only)")
+        # R-CP-3: clarify that bucket total = SNV + indel (rows below are components, not extras).
+        print("  Each bucket row is followed by its SNV and indel components (sums to the bucket total).")
         print(f"{'='*96}\n")
         print_delta_stratification(probe_result, cigar_result, final_result, remapped_df, main_df)
 
@@ -348,7 +353,8 @@ def main():
         print("COORD SOURCE DISTRIBUTION  (how many markers used each source)")
         print(f"{'='*96}\n")
         merged = main_df.merge(remapped_df, on="Name", how="left")
-        for src, count in merged["coord_source"].value_counts().items():
+        # R-CP-2: include the NaN / "N/A" bucket so percentages sum to 100%.
+        for src, count in merged["coord_source"].fillna("N/A").value_counts().items():
             print(f"  {src:<12}  {count:>8,}  ({100*count/total:.1f}%)")
         print()
 
@@ -379,7 +385,8 @@ def main():
 
     # Write the report file
     os.makedirs(args.output_dir, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
+    # R-BM-3 / X-4: standardised on hyphen-separated format shared with benchmark_compare.py.
+    ts = time.strftime("%Y-%m-%d_%H-%M-%S")
     report_path = os.path.join(args.output_dir,
                                f"benchmark_cigar_vs_probe_{ts}_report.txt")
     with open(report_path, "w") as f:

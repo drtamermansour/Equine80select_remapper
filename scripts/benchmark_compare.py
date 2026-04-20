@@ -984,12 +984,32 @@ def format_qc_impact_section(impact: dict) -> list[str]:
         w(f"    {stage:<28} {n:>10,} {nc:>12,} {pct:>9.1f}%")
     w()
 
-    # Cumulative accuracy
+    # Cumulative accuracy — R-BM-7: suppress consecutive unchanged rows (the common case
+    # under permissive presets where stages 3-11 don't fire); shown once as an elision line.
     w("  Cumulative passing-set accuracy  (stages applied in order)")
     w(f"    {'after':<28} {'remaining':>10} {'correct':>10} {'accuracy':>10}")
     w("    " + "-" * 62)
+    prev_remaining = None
+    elided_run = []
+    def _flush_elided():
+        if elided_run:
+            if len(elided_run) == 1:
+                # Only one suppressed stage: print it after all (no elision benefit).
+                label, n, c, acc = elided_run[0]
+                w(f"    {label:<28} {n:>10,} {c:>10,} {acc:>9.1f}%")
+            else:
+                first = elided_run[0][0]
+                last  = elided_run[-1][0]
+                w(f"    ({first} – {last}: unchanged, {len(elided_run)} stages)")
+            elided_run.clear()
     for label, n, c, acc in impact["cumulative"]:
-        w(f"    {label:<28} {n:>10,} {c:>10,} {acc:>9.1f}%")
+        if prev_remaining is not None and n == prev_remaining:
+            elided_run.append((label, n, c, acc))
+        else:
+            _flush_elided()
+            w(f"    {label:<28} {n:>10,} {c:>10,} {acc:>9.1f}%")
+            prev_remaining = n
+    _flush_elided()
     w()
 
     # False positives: correct markers removed by QC
@@ -1014,6 +1034,8 @@ def format_qc_impact_section(impact: dict) -> list[str]:
     fn = impact["fn_df"]
     w(f"  False negatives  (non-correct markers surviving QC): {len(fn):,}")
     if len(fn) > 0:
+        # R-BM-5: the two breakdowns below are two views of the same set, not additive.
+        w(f"    (the two breakdowns below are two views of the same {len(fn):,} markers — totals match, not additive)")
         w("    FN by benchmark result:")
         for cat, n in fn["result"].value_counts().items():
             w(f"      {cat:<28} {int(n):>6,}")
@@ -1037,6 +1059,7 @@ def write_report(
     manifest_path: str,
     remapped_path: str,
     baseline_df: pd.DataFrame | None = None,
+    run_ts: str | None = None,
 ) -> None:
     """Write the human-readable benchmark report."""
     total_manifest = len(result_df) + len(chry_df) + len(chr0_df)
@@ -1046,8 +1069,11 @@ def write_report(
     def w(s=""):
         lines.append(s)
 
+    # R-BM-2: prefer caller-supplied run_ts so the body timestamp matches the filename ts.
+    if run_ts is None:
+        run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     w(f"Benchmark Report — assembly: {assembly}")
-    w(f"Run: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    w(f"Run: {run_ts}")
     w(f"Manifest:  {manifest_path}")
     w(f"Remapped:  {remapped_path}")
     w("-" * 60)
@@ -1058,7 +1084,8 @@ def write_report(
     w(f"  Excluded Chr=Y:                {len(chry_df):>10,}")
     w(f"  Excluded Chr=0:                {len(chr0_df):>10,}")
     w()
-    w("HEADLINE COUNTS")
+    # R-BM-1: state the denominator inline so 99.7% is unambiguously of 82,222.
+    w(f"HEADLINE COUNTS  (of {benchmarked:,} benchmarked markers)")
     for cat in CATEGORIES:
         n = (result_df["result"] == cat).sum()
         w(f"  {cat:<32} {_fmt(n, benchmarked)}")
@@ -1095,8 +1122,11 @@ def write_report(
     delta_rows = stratify_by_coord_delta(result_df)
     if delta_rows is not None:
         w("ACCURACY STRATIFIED BY COORD_DELTA")
-        w("  CoordDelta = |probe_coord - CIGAR_coord|; -1 = CIGAR target in soft clip")
-        w("  coord-accurate = correct + coord_correct_strand_wrong")
+        # R-CP-1: unified CoordDelta=-1 wording shared with benchmark_cigar_vs_probe.py.
+        w("  CoordDelta = |probe_coord - CIGAR_coord|; -1 whenever one of the two CIGARs is")
+        w("  unavailable (SNP in soft-clipped TopSeq, or topseq_only, or probe_only)")
+        # R-BM-6: clarify coord-accurate column vs correct column.
+        w("  coord-accurate = correct + coord_correct_strand_wrong (= correct when no strand-flipped markers)")
         w()
         w(f"  {'bucket':<14}  {'N':>8}  {'coord-accurate':>20}  {'correct':>20}")
         w("  " + "-" * 68)
@@ -1173,7 +1203,10 @@ def main():
     args = parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # Captured once and reused for filename + report body so they match (R-BM-2).
+    run_dt = datetime.now()
+    ts = run_dt.strftime("%Y-%m-%d_%H-%M-%S")
+    run_ts_body = run_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     print(f"[benchmark] Loading manifest: {args.manifest}")
     main_df, chry_df, chr0_df = load_manifest(args.manifest)
@@ -1236,6 +1269,7 @@ def main():
         manifest_path=args.manifest,
         remapped_path=args.remapped,
         baseline_df=baseline_df,
+        run_ts=run_ts_body,
     )
     print(f"[benchmark] Report: {report_path}")
 

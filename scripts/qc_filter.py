@@ -625,6 +625,8 @@ def format_three_d_table(three_d):
     lines = [
         "═" * W,
         "3-Dimension Summary  (anchor × tie × Ref/Alt outcome)  — final markers",
+        "NM_* = any RefAltMethodAgreement value starting with NM_ (NM_match, NM_validated,",
+        "       NM_N/A, NM_tied, NM_only, NM_unmatch, NM_corrected — see algorithm_overview.md)",
         f"  {'anchor / tie':<28} {'NM_*(Chr≠0)':>10} {'unresolved(Chr=0)':>17}"
         f" {'not_attempted(Chr=0)':>20} {'Total':>8}",
         "  " + "─" * 86,
@@ -702,7 +704,7 @@ def run_qc(args):
     # ── Stage 1: Failed markers (Strand=N/A — unmapped + locus_unresolved) ──
     df_mapped = df[df[col_strand].isin(["+", "-"])].copy()
     _tag_removed(why_filtered, df.index, df_mapped.index, "stage_1_failed_markers")
-    qc_stats["Failed markers (unmapped + locus_unresolved)"] = len(df_mapped)
+    qc_stats["stage_1_failed_markers (Strand=N/A: unmapped, locus_unresolved, refalt_unresolved)"] = len(df_mapped)
     print(f"[qc] Stage 1 — Failed markers removed: {len(df) - len(df_mapped):,}; remaining: {len(df_mapped):,}")
 
     # ── VCF generation + strand normalisation (needed by Stage 2) ───────────
@@ -755,7 +757,7 @@ def run_qc(args):
     df_noconflict = df_mapped[snp_pass | indel_pass].copy()
 
     _tag_removed(why_filtered, df_mapped.index, df_noconflict.index, "stage_2_design_conflict")
-    qc_stats["After design conflict filter"] = len(df_noconflict)
+    qc_stats["stage_2_design_conflict (Ref/Alt ≠ genome)"] = len(df_noconflict)
     print(f"[qc] Stage 2 — Design conflict removed: {len(df_mapped) - len(df_noconflict):,}; remaining: {len(df_noconflict):,}")
 
     # ── Stage 3: Min-anchor evidence ─────────────────────────────────────────
@@ -768,7 +770,7 @@ def run_qc(args):
         print(f"[qc] WARNING: {col_anchor!r} column not found. Skipping min-anchor filter.")
         df_coord_role = df_noconflict
     _tag_removed(why_filtered, df_noconflict.index, df_coord_role.index, "stage_3_min_anchor")
-    qc_stats[f"After min-anchor ({args.min_anchor})"] = len(df_coord_role)
+    qc_stats[f"stage_3_min_anchor ({args.min_anchor})"] = len(df_coord_role)
 
     # ── Stage 4: Tie policy ──────────────────────────────────────────────────
     col_tie = f"tie_{assembly}"
@@ -780,7 +782,7 @@ def run_qc(args):
         print(f"[qc] WARNING: {col_tie!r} column not found. Skipping tie-policy filter.")
         df_tie = df_coord_role
     _tag_removed(why_filtered, df_coord_role.index, df_tie.index, "stage_4_tie_policy")
-    qc_stats[f"After tie-policy ({args.tie_policy})"] = len(df_tie)
+    qc_stats[f"stage_4_tie_policy ({args.tie_policy})"] = len(df_tie)
 
     # ── Stage 5: Min-refalt-confidence ───────────────────────────────────────
     if col_refalt_agree in df_tie.columns:
@@ -791,7 +793,7 @@ def run_qc(args):
         print(f"[qc] WARNING: {col_refalt_agree!r} column not found. Skipping min-refalt-confidence filter.")
         df_refalt = df_tie
     _tag_removed(why_filtered, df_tie.index, df_refalt.index, "stage_5_min_refalt_confidence")
-    qc_stats[f"After min-refalt-confidence ({args.min_refalt_confidence})"] = len(df_refalt)
+    qc_stats[f"stage_5_min_refalt_confidence ({args.min_refalt_confidence})"] = len(df_refalt)
 
     # ── Stage 6: MAPQ_TopGenomicSeq (probe_only exempt via NaN) ──────────────
     ts_mapq = df_refalt["MAPQ_TopGenomicSeq"]
@@ -801,11 +803,11 @@ def run_qc(args):
         _tag_removed(why_filtered, df_refalt.index, df_mapq_ts.index, "stage_6_mapq_topseq")
         n_removed = len(df_refalt) - len(df_mapq_ts)
         print(f"[qc] Stage 6 — min-mapq-topseq (>={args.min_mapq_topseq}): {n_removed:,} removed; {len(df_mapq_ts):,} remaining")
-        qc_stats[f"After min-mapq-topseq (>={args.min_mapq_topseq})"] = len(df_mapq_ts)
+        qc_stats[f"stage_6_mapq_topseq (MAPQ ≥ {args.min_mapq_topseq})"] = len(df_mapq_ts)
     else:
         df_mapq_ts = df_refalt
         print("[qc] Stage 6 — min-mapq-topseq skipped (--min-mapq-topseq off).")
-        qc_stats["Stage 6 skipped — min-mapq-topseq (--min-mapq-topseq off)"] = len(df_mapq_ts)
+        qc_stats["stage_6_mapq_topseq skipped (--min-mapq-topseq off)"] = len(df_mapq_ts)
 
     # ── Stage 7: MAPQ_Probe (topseq_only exempt via NaN) ─────────────────────
     if args.min_mapq_probe > 0:
@@ -813,11 +815,11 @@ def run_qc(args):
         _tag_removed(why_filtered, df_mapq_ts.index, df_mapq.index, "stage_7_mapq_probe")
         n_removed = len(df_mapq_ts) - len(df_mapq)
         print(f"[qc] Stage 7 — min-mapq-probe (>={args.min_mapq_probe}): {n_removed:,} removed; {len(df_mapq):,} remaining")
-        qc_stats[f"After min-mapq-probe (>={args.min_mapq_probe})"] = len(df_mapq)
+        qc_stats[f"stage_7_mapq_probe (MAPQ ≥ {args.min_mapq_probe})"] = len(df_mapq)
     else:
         df_mapq = df_mapq_ts
         print("[qc] Stage 7 — min-mapq-probe skipped (--min-mapq-probe off).")
-        qc_stats["Stage 7 skipped — min-mapq-probe (--min-mapq-probe off)"] = len(df_mapq)
+        qc_stats["stage_7_mapq_probe skipped (--min-mapq-probe off)"] = len(df_mapq)
 
     # ── Stage 8: CoordDelta ───────────────────────────────────────────────────
     # topseq_only and probe_only have CoordDelta=-1 (no CIGAR coord) and pass through.
@@ -833,11 +835,11 @@ def run_qc(args):
         else:
             print(f"[qc] WARNING: {col_coord_delta!r} column not found. Skipping max-coord-delta filter.")
             df_coord = df_mapq
-        qc_stats[f"After max-coord-delta (<={args.max_coord_delta})"] = len(df_coord)
+        qc_stats[f"stage_8_coord_delta (CoordDelta ≤ {args.max_coord_delta})"] = len(df_coord)
     else:
         df_coord = df_mapq
         print("[qc] Stage 8 — max-coord-delta skipped (--max-coord-delta off).")
-        qc_stats["Stage 8 skipped — max-coord-delta (--max-coord-delta off)"] = len(df_coord)
+        qc_stats["stage_8_coord_delta skipped (--max-coord-delta off)"] = len(df_coord)
     _tag_removed(why_filtered, df_mapq.index, df_coord.index, "stage_8_coord_delta")
 
     # ── Stage 9: Indels (excluded by default; --include-indels to include) ───
@@ -845,12 +847,12 @@ def run_qc(args):
         df_noindel = apply_exclude_indels_filter(df_coord).copy()
         n_removed = len(df_coord) - len(df_noindel)
         print(f"[qc] Stage 9 — Indels excluded: {n_removed:,} removed; {len(df_noindel):,} remaining")
-        qc_stats["After indel filter"] = len(df_noindel)
+        qc_stats["stage_9_indel_excluded (indel markers removed)"] = len(df_noindel)
     else:
         df_noindel = df_coord
         hypothetical = len(df_coord) - len(apply_exclude_indels_filter(df_coord))
         print(f"[qc] Stage 9 — Indels included (--include-indels); {hypothetical:,} would have been removed.")
-        qc_stats[f"Stage 9 skipped — Indels (--include-indels; would remove {hypothetical:,})"] = len(df_noindel)
+        qc_stats[f"stage_9_indel_excluded skipped (--include-indels set; would have removed {hypothetical:,})"] = len(df_noindel)
     _tag_removed(why_filtered, df_coord.index, df_noindel.index, "stage_9_indel_excluded")
 
     # ── Stage 10: Polymorphic (removed by default; --include-polymorphic to skip) ─
@@ -861,7 +863,7 @@ def run_qc(args):
         )].copy()
         n_removed = len(df_noindel) - len(df_final)
         print(f"[qc] Stage 10 — Polymorphic removed: {n_removed:,}; {len(df_final):,} remaining")
-        qc_stats["After polymorphic filter"] = len(df_final)
+        qc_stats["stage_10_polymorphic (multi-marker loci removed)"] = len(df_final)
     else:
         df_final = df_noindel
         poly_set = polymorphic_positions(df_noindel, col_chr, col_pos)
@@ -869,7 +871,7 @@ def run_qc(args):
             lambda r: (r[col_chr], r[col_pos]) in poly_set, axis=1
         ).sum()
         print(f"[qc] Stage 10 — Polymorphic sites included (--include-polymorphic); {hypothetical:,} would have been removed.")
-        qc_stats[f"Stage 10 skipped — Polymorphic (--include-polymorphic; would remove {hypothetical:,})"] = len(df_final)
+        qc_stats[f"stage_10_polymorphic skipped (--include-polymorphic set; would have removed {hypothetical:,})"] = len(df_final)
     _tag_removed(why_filtered, df_noindel.index, df_final.index, "stage_10_polymorphic")
 
     # ── Stage 11: Ambiguous SNPs (A/T, C/G) — excluded by default ────────────
@@ -878,11 +880,11 @@ def run_qc(args):
         df_final = apply_exclude_ambiguous_snps_filter(df_before_ambig).copy()
         n_removed = len(df_before_ambig) - len(df_final)
         print(f"[qc] Stage 11 — Ambiguous SNPs excluded: {n_removed:,} removed; {len(df_final):,} remaining")
-        qc_stats["After ambiguous-SNP filter"] = len(df_final)
+        qc_stats["stage_11_ambiguous_snp (A/T, C/G SNPs removed)"] = len(df_final)
     else:
         hypothetical = len(df_before_ambig) - len(apply_exclude_ambiguous_snps_filter(df_before_ambig))
         print(f"[qc] Stage 11 — Ambiguous SNPs included (--include-ambiguous-snps); {hypothetical:,} would have been removed.")
-        qc_stats[f"Stage 11 skipped — Ambiguous SNPs (--include-ambiguous-snps; would remove {hypothetical:,})"] = len(df_final)
+        qc_stats[f"stage_11_ambiguous_snp skipped (--include-ambiguous-snps set; would have removed {hypothetical:,})"] = len(df_final)
     _tag_removed(why_filtered, df_before_ambig.index, df_final.index, "stage_11_ambiguous_snp")
 
     # ── Write full-input trace CSV with per-marker WhyFiltered column ────────
@@ -961,7 +963,25 @@ def run_qc(args):
     with open(report_path, "w") as f:
         f.write(f"QC Report — assembly: {assembly}\n")
         f.write(f"Input: {args.input}\n")
-        f.write("-" * 60 + "\n")
+        # Settings block — makes the report self-describing without re-reading the CLI (R-QC-5).
+        preset_line = args.preset if args.preset else "default (implicit)"
+        f.write(f"Preset: {preset_line}\n")
+        f.write(
+            f"  strictness: min-anchor={args.min_anchor}, tie-policy={args.tie_policy}, "
+            f"min-refalt-confidence={args.min_refalt_confidence}\n"
+        )
+        _fmt_thr = lambda v, kind: "off" if (kind == "mapq" and v == 0) or (kind == "delta" and v < 0) else v
+        f.write(
+            f"  thresholds: min-mapq-topseq={_fmt_thr(args.min_mapq_topseq, 'mapq')}, "
+            f"min-mapq-probe={_fmt_thr(args.min_mapq_probe, 'mapq')}, "
+            f"max-coord-delta={_fmt_thr(args.max_coord_delta, 'delta')}\n"
+        )
+        f.write(
+            f"  include: indels={'on' if args.include_indels else 'off'}, "
+            f"polymorphic={'on' if args.include_polymorphic else 'off'}, "
+            f"ambiguous-SNPs={'on' if args.include_ambiguous_snps else 'off'}\n"
+        )
+        f.write("-" * 95 + "\n")
         prev = None
         for stage, count in qc_stats.items():
             if prev is not None:
@@ -969,10 +989,13 @@ def run_qc(args):
                 removed_str = f"  (-{prev - count:,})" if removed != "" else ""
             else:
                 removed_str = ""
-            f.write(f"{stage:<75} {count:>8,}{removed_str}\n")
+            f.write(f"{stage:<95} {count:>8,}{removed_str}\n")
             if isinstance(count, int):
                 prev = count
-        f.write(f"{'Final markers':<75} {len(df_final):>8,}\n")
+        # Blank line before Final markers — the row has no delta by design; the blank line makes
+        # the visual discontinuity intentional (R-QC-6).
+        f.write("\n")
+        f.write(f"{'Final markers':<95} {len(df_final):>8,}\n")
 
     # ── 3D summary appended to QC_Report.txt ─────────────────────────────────
     _req = [f"anchor_{assembly}", f"tie_{assembly}", f"RefAltMethodAgreement_{assembly}"]
@@ -987,8 +1010,14 @@ def run_qc(args):
             if key not in three_d:
                 three_d[key] = {"NM_*": 0, "refalt_unresolved": 0, "N/A": 0}
             three_d[key][bucket] += cnt
+        # QC-context note — Stage 1 removed every Chr=0 marker, so the two Chr=0 columns will
+        # always be 0 in this table (R-QC-4).
+        note = (
+            "Note: after Stage 1 every surviving marker has Chr≠0, so unresolved(Chr=0) and "
+            "not_attempted(Chr=0) will always be 0 here."
+        )
         with open(report_path, "a") as f:
-            f.write("\n" + format_three_d_table(three_d) + "\n")
+            f.write("\n" + note + "\n" + format_three_d_table(three_d) + "\n")
 
     print(f"[qc] QC report written: {report_path}")
 

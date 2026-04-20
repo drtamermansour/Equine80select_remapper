@@ -69,14 +69,21 @@ columns. Results land in `results/`:
 results/
 ├── remapping/                                      ← step 1: realignment
 │   ├── {prefix}_remapped_{assembly}.csv            full marker table with quality columns
-│   └── remapping_Report.txt                        per-marker decision summary
+│   ├── remapping_Report.txt                        per-marker decision summary
+│   └── (sidecar CSVs: unresolved / scaffold / NM-position triples — see docs/output_formats.md)
 └── qc/                                             ← step 2: quality filtering
     ├── {prefix}_allele_map_{assembly}.tsv          ★ main output — allele crosswalk
     ├── {prefix}_remapped_{assembly}.bim            PLINK BIM
     ├── {prefix}_remapped_{assembly}.vcf            final filtered VCF
     ├── {prefix}_remapped_{assembly}_traced.csv     per-marker filter trace
-    └── QC_Report.txt                               per-stage filter counts
+    ├── QC_Report.txt                               per-stage filter counts
+    └── diagnostics/                                MAPQ histograms
 ```
+
+Every marker is labelled by **anchor** — `topseq_n_probe` (both TopSeq and
+probe aligned), `topseq_only` (only TopSeq aligned), `probe_only` (only
+probe aligned), or `N/A` (neither) — so downstream filters can trade off
+coverage vs confidence.
 
 For HPC clusters: `bash submit_slurm.sh -i ... -r ... -a ... -o results/ -t 64`.
 
@@ -89,7 +96,7 @@ The most useful flags. See [docs/cli_reference.md](docs/cli_reference.md) for ev
 | Flag | Default | What it does |
 |---|---|---|
 | `-t / --threads` | `4` | Threads for minimap2 (use more on HPC) |
-| `--preset` | none | One-knob strictness: `strict` / `default` / `permissive`. Tunes the strictness + threshold + include/exclude flags as a bundle; individual flags override. |
+| `--preset` | `default` (implicit) | One-knob strictness: `strict` / `default` / `permissive`. Tunes the strictness + threshold + include/exclude flags as a bundle; individual flags override. Omitting the flag is equivalent to `--preset default` — the defaults shown throughout this README are the `default` preset's values. |
 | `--min-anchor` | `topseq` | How permissive to be about which markers count: `dual` (strictest — `topseq_n_probe` only), `topseq` (also `topseq_only`), `probe` (most permissive — also `probe_only`) |
 | `--include-indels` | off | By default, indel markers are dropped from the final outputs. Pass this to keep them. |
 | `--include-ambiguous-snps` | off | By default, A/T and C/G SNPs are dropped (their alleles can't tell strand apart). Pass this to keep them. |
@@ -147,7 +154,8 @@ pytest tests/ -v \
 Without these flags, the three integration tests in
 `tests/test_benchmark_compare.py` fail fast with a clear
 "Integration tests require --results-dir" / "require --manifest" message;
-the 292 unit tests run regardless.
+the unit-test portion (everything not under the benchmark-integration
+marker) runs regardless — see the pytest summary for the current count.
 
 ---
 

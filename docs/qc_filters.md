@@ -10,11 +10,11 @@ trace CSV records the *first* filter that rejected each marker.
 
 | # | Stage | What it removes | Default behaviour | Override |
 |---|---|---|---|---|
-| 1 | Failed markers | Markers that couldn't be placed (`Strand` is `N/A`, meaning unmapped or locus_unresolved) | always on | — |
+| 1 | Failed markers | Markers that couldn't be placed (`Strand` is `N/A`: unmapped, `locus_unresolved`, or `refalt_unresolved`) | always on | — |
 | 2 | Design conflict | SNPs whose Ref allele doesn't match the reference base, and deletions whose Ref sequence isn't in the genome | always on | — |
 | 3 | Min-anchor evidence | Markers placed by less-trusted evidence | filter at `topseq` (allows `topseq_n_probe` + `topseq_only`) | `--min-anchor dual`/`probe` |
 | 4 | Tie policy | Markers whose locus required certain tie-break steps (e.g. picking a placed chromosome over a scaffold) | filter at `resolved` (rejects `scaffold_resolved` and `locus_unresolved`) | `--tie-policy unique`/`avoid_scaffolds` |
-| 5 | Min-refalt-confidence | Markers where the Ref/Alt assignment came from the weaker of the two methods | filter at `moderate` | `--min-refalt-confidence high`/`low` |
+| 5 | Min-refalt-confidence | Markers where the Ref/Alt assignment came from the weaker of the two methods. Tiers: `high` = `NM_match` + `NM_validated`; `moderate` adds `NM_N/A` + `NM_tied`; `low` adds `NM_only` + `NM_unmatch` + `NM_corrected`. | filter at `moderate` | `--min-refalt-confidence high`/`low` |
 | 6 | TopGenomicSeq MAPQ | Markers whose context-sequence alignment was low-quality | filter at MAPQ ≥ 30 | `--min-mapq-topseq N\|off` |
 | 7 | Probe MAPQ | Same idea, but for the probe alignment | disabled by default | `--min-mapq-probe N\|off` |
 | 8 | Coord-delta | Markers where the probe and TopSeq disagree about the exact coordinate | disabled by default | `--max-coord-delta N\|off` |
@@ -49,11 +49,23 @@ manifest with one extra column, `WhyFiltered_{assembly}`. For markers that
 survived all filters this column is empty; otherwise it contains the first
 stage label (e.g. `stage_6_mapq_topseq`) that removed the marker.
 
+The same `stage_N_<slug>` identifiers appear in `QC_Report.txt`'s per-stage
+rows, so you can grep the trace CSV for the label you saw in the report.
+
 This lets you:
 
 - Build "rescue" lists of markers a particular filter excluded
 - Audit whether the filters are doing what you want
 - Compare two pipeline runs at the per-marker level
+
+## "Stage skipped" rows in the report
+
+When a threshold is `off` or an include-flag is set, the corresponding stage
+doesn't run but still appears in `QC_Report.txt` — for example
+`stage_9_indel_excluded skipped (--include-indels set; would have removed
+177)`. The `would have removed` count is the number of markers the stage
+*would* have dropped had it run, useful for answering "what would `strict`
+do here?" without re-running the pipeline.
 
 ## Measuring whether a filter is doing its job
 

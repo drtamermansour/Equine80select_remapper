@@ -1,8 +1,11 @@
 # Why We're Right: Markers Where the Manifest Is Wrong
 
 A benchmark-vs-manifest disagreement doesn't always mean the pipeline is wrong.
-For **11 markers** (out of 269 non-correct) in the v2 manifest → EquCab3 run, our
-pipeline found the true locus and the manifest is the one that's stale.
+For a small group of markers out of the non-correct set in the v2 manifest →
+EquCab3 run, our pipeline found the true locus and the manifest is the one
+that's stale. The worked examples below come from an earlier run that tagged
+11 such markers; the individual cases transfer directly even if the exact
+count drifts by a few markers when the reference changes.
 
 ## How we know
 

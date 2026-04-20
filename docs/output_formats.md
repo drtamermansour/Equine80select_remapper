@@ -6,7 +6,7 @@ What the pipeline writes, where, and what each column means.
 
 ```
 output-dir/
-├── temp/                                      intermediate FASTA / SAM (removed unless --keep-temp)
+├── temp/                                      intermediate FASTA/SAM (from remap_manifest.py) and _pos/_ref VCFs (from qc_filter.py); removed unless --keep-temp
 ├── remapping/                                 step 2 — alignment & coordinate resolution
 │   ├── {prefix}_remapped_{assembly}.csv         full manifest with quality columns added
 │   ├── remapping_Report.txt                     per-decision summary
@@ -21,7 +21,7 @@ output-dir/
     ├── {prefix}_remapped_{assembly}.vcf                         final filtered VCF
     ├── {prefix}_remapped_{assembly}_traced.csv                  full manifest + per-marker WhyFiltered column
     ├── QC_Report.txt                                            per-stage filter counts
-    └── diagnostics/                                             MAPQ histograms + known-assembly benchmark
+    └── diagnostics/                                             MAPQ histograms (TopSeq and Probe)
 ```
 
 ---
@@ -67,13 +67,11 @@ appended. Column names embed the assembly label given via `-a` (e.g. `-a equCab3
 | `Alt_{assembly}` | str | Alternate allele in the same orientation as `Ref` |
 | `CoordProbe_{assembly}` | int | Raw probe-CIGAR coordinate (before any override); `0` if not applicable |
 | `Coord_TopSeqCIGAR_{assembly}` | int | TopSeq-CIGAR coordinate; `0` if not applicable |
-| `CoordDelta_{assembly}` | float | `\|CoordProbe − Coord_TopSeqCIGAR\|`; `−1` if a CIGAR-derived coordinate was unavailable (SNP in a soft-clipped region, or `topseq_only` / `probe_only` markers) |
+| `CoordDelta_{assembly}` | float | `\|CoordProbe − Coord_TopSeqCIGAR\|`; `−1` whenever one of the two CIGARs is unavailable — SNP in a soft-clipped TopSeq region, or `topseq_only`, or `probe_only` markers |
 | `CoordSource_{assembly}` | str | `"probe_cigar"` (probe alignment's CIGAR) or `"topseq_cigar"` (TopSeq alignment's CIGAR) — which one ended up in `MapInfo`. `"N/A"` for unmapped. |
 | `RefBaseMatch_{assembly}` | str | `"True"` / `"False"` / `"N/A"` — does the genome reference base at `MapInfo` match `Ref` after strand normalisation? Diagnostic. |
-| `ProbeStrand_{assembly}` | str | Probe alignment strand: `+`, `−`, or `N/A` (`N/A` for `topseq_only` and unmapped) |
-| `StrandAgreementAsExpected_{assembly}` | str | `"True"` / `"False"` / `"N/A"` — whether the probe's alignment strand matches what's expected from sequence comparison. Always `"True"` (or `"N/A"` for rescue paths) since the strand check is a hard filter in valid-triple construction. |
 
-### b. Alignment quality columns
+### b. Alignment quality & diagnostics columns
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -82,6 +80,8 @@ appended. Column names embed the assembly label given via `-a` (e.g. `-a equCab3
 | `DeltaScore_TopGenomicSeq` | int | AS gap between best and 2nd-best TopSeq alignments; `−1` if fewer than 2 |
 | `QueryCov_TopGenomicSeq` | float | Fraction of TopSeq query in M/=/X aligned ops; `0.0` for unmapped |
 | `SoftClipFrac_TopGenomicSeq` | float | Fraction of TopSeq query that is soft-clipped; `0.0` for unmapped |
+| `ProbeStrand_{assembly}` | str | Probe alignment strand: `+`, `−`, or `N/A` (`N/A` for `topseq_only` and unmapped) |
+| `StrandAgreementAsExpected_{assembly}` | str | `"True"` / `"False"` / `"N/A"` — whether the probe's alignment strand matches what's expected from sequence comparison. Always `"True"` (or `"N/A"` for rescue paths) since the strand check is a hard filter in valid-triple construction. |
 
 ### c. Decision columns
 
@@ -91,6 +91,10 @@ appended. Column names embed the assembly label given via `-a` (e.g. `-a equCab3
 | `anchor_{assembly}` | `topseq_n_probe` / `topseq_only` / `probe_only` / `N/A` (which evidence chain placed the marker) |
 | `tie_{assembly}` | `unique` / `AS_resolved` / `dAS_resolved` / `NM_resolved` / `CoordDelta_resolved` / `scaffold_resolved` / `locus_unresolved` / `N/A` (how multi-locus ties were broken) |
 | `RefAltMethodAgreement_{assembly}` | `NM_match` / `NM_validated` / `NM_N/A` / `NM_tied` / `NM_only` / `NM_unmatch` / `NM_corrected` / `NM_mismatch` / `refalt_unresolved` / `N/A` (agreement between genome lookup and NM-based Ref/Alt determination) |
+
+`gp1`–`gp5` are alignment-pattern groups summarising which of the two TopSeq
+sequences and/or the probe aligned. Per-group definitions appear in the
+"Step 1" section of `remapping_Report.txt`.
 
 For the meaning of each `RefAltMethodAgreement_{assembly}` value, see the
 table in [algorithm_overview.md § Ref/Alt determination](algorithm_overview.md#refalt-determination).

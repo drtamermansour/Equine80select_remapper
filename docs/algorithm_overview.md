@@ -163,8 +163,8 @@ Empirical accuracy on the EquCab2→EquCab3 benchmark:
 
 | Anchor | Markers | Accuracy |
 |---|---|---|
-| `topseq_n_probe` | majority | ~99.8% |
-| `topseq_only` | minority | ~99% |
+| `topseq_n_probe` | majority | ~99.8% on `tie=unique`; drops sharply on small `*_resolved` subclasses (see benchmarking.md § 3-Dimension Accuracy Breakdown) |
+| `topseq_only` | minority | ~99% overall, ~99.3% on `tie=unique`; small `*_resolved` subclasses have too few markers for a stable rate |
 | `probe_only` | rare | weakest class; segregated in the explanatory benchmark layer |
 
 ---
@@ -194,7 +194,7 @@ of values, with the variant type each applies to and what the value means:
 | `NM_validated` | Deletion | NM determined which allele is the deleted sequence; the genome was fetched at `MapInfo` (with ±10 bp refinement) and the deletion sequence was confirmed present. High-confidence deletion. |
 | `NM_mismatch` | Deletion | NM assigned a deletion sequence but the genome at `MapInfo` does not contain that sequence — the marker is **removed** by Stage 2 of the QC cascade (design conflict filter). |
 | `refalt_unresolved` | SNP, Indel | Both methods failed (genome lookup and NM comparison could not determine which allele is Ref). The marker is forced to `Chr=0` and excluded. |
-| `N/A` | markers that never reached Ref/Alt determination | The pipeline stopped upstream, so `determine_ref_alt_v2` was never called. Three situations produce this value: (1) the marker was **unmapped** (`anchor == "N/A"`, no valid alignment at all); (2) the marker's **locus was unresolved** (`tie == "locus_unresolved"`, tie-break exhausted in either the main path or a rescue path); (3) the marker's SNP target fell inside a **soft-clipped CIGAR region** in the TopSeq rescue path (no reference coordinate derivable). In all three, `Chr=0`. The 3-D summary table in `remapping_Report.txt` tallies these separately from `refalt_unresolved` (which *is* a Ref/Alt-step failure) — the former appears under `not_attempted(Chr=0)`; the latter under `unresolved(Chr=0)`. |
+| `N/A` | markers that never reached Ref/Alt determination | The pipeline stopped upstream, so `determine_ref_alt_v2` was never called. Three situations produce this value: (1) the marker was **unmapped** (`anchor == "N/A"`, no valid alignment at all); (2) the marker's **locus was unresolved** (`tie == "locus_unresolved"`, tie-break exhausted in either the main path or a rescue path); (3) the marker's SNP target fell inside a **soft-clipped CIGAR region** in the TopSeq rescue path (no reference coordinate derivable). In all three, `Chr=0`. |
 
 ---
 

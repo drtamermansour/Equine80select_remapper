@@ -101,7 +101,7 @@ final 98.7%.
 
 2. **`MAPQ_Probe = NaN` ≠ MAPQ was zero.** NaN means `topseq_only` (no probe alignment used). MAPQ filters must do `.notna() & (col < threshold)` — see `apply_probe_mapq_filter`. Same for `MAPQ_TopGenomicSeq = NaN` for `probe_only` markers.
 
-3. **`CoordDelta = -1` is a sentinel**, not a negative distance. `topseq_only` and `probe_only` carry it because there's no probe-vs-CIGAR pair to compare. Stage 8 `--max-coord-delta N` correctly leaves them through (`-1 > N` is false for N ≥ 0).
+3. **`CoordDelta = -1` is a sentinel**, not a negative distance. `-1` whenever one of the two CIGARs is unavailable: SNP in a soft-clipped TopSeq region, or `topseq_only` (no probe alignment), or `probe_only` (no TopSeq alignment). Stage 8 `--max-coord-delta N` correctly leaves them through (`-1 > N` is false for N ≥ 0). Use the same phrasing in user-facing reports and `output_formats.md`.
 
 4. **Probe alignment strand ≠ TopSeq alignment strand.** They are independent SAM-FLAG-derived values. Mixing them caused the original ±51 bp bug. `get_probe_coordinate` uses **probe** strand; `parse_cigar_to_ref_pos` uses **TopSeq** strand for `target_idx`.
 
@@ -121,7 +121,7 @@ final 98.7%.
 
 ```bash
 conda activate remap
-pytest tests/ -v                                         # 271 unit tests (~9 s)
+pytest tests/ -v                                         # unit tests (~9 s)
 pytest tests/test_benchmark_compare.py --results-dir <dir> -v   # +3 integration
 ```
 
