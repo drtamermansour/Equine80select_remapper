@@ -11,6 +11,10 @@
 #       --reference  <equCab3_genome.fa>
 #       --output-dir <results_dir>
 #       [--chain     <path>]                (default: genomes/chain/equCab2ToEquCab3.over.chain.gz)
+#       [--noAlt-reference <path>]          (FASTA with alt-haplotype scaffolds removed;
+#                                            enables the 'permissive_noAlt' arm. If omitted,
+#                                            defaults to <REFERENCE_dir>_cleaned/<stem>_no_alt_haplotypes.fa;
+#                                            auto-built via the pre-pipeline if that path is missing.)
 #       [--threads   N]                     (default: 4)
 #       [--resume]                          (skip our pipeline's minimap2 step if already done)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -27,6 +31,7 @@ OUTPUT_DIR=""
 CHAIN=""
 THREADS=4
 RESUME=""
+NOALT_REFERENCE=""
 
 usage() { grep "^#" "$0" | grep -v "^#!" | sed 's/^# \{0,1\}//'; exit 0; }
 
@@ -39,6 +44,7 @@ while [[ $# -gt 0 ]]; do
         --chain)      CHAIN="$2"; shift 2 ;;
         --threads)    THREADS="$2"; shift 2 ;;
         --resume)     RESUME="--resume"; shift ;;
+        --noAlt-reference) NOALT_REFERENCE="$2"; shift 2 ;;
         -h|--help)    usage ;;
         *) echo "Unknown argument: $1"; usage ;;
     esac
@@ -69,6 +75,41 @@ if [[ ! -f "$CHAIN" ]]; then
         http://hgdownload.cse.ucsc.edu/goldenPath/equCab2/liftOver/equCab2ToEquCab3.over.chain.gz
 fi
 echo "[bench] Using chain: $CHAIN"
+
+# ── noAlt reference resolution + optional auto-build ─────────────────────────
+# The 'permissive_noAlt' arm runs our pipeline against a FASTA with alt-haplotype
+# unplaced scaffolds removed (see docs/scaffold_filtering.md). If --noAlt-reference
+# is not supplied, default to a sibling '{reference_dir}_cleaned' location whose
+# layout matches exclude_alt_haplotypes.py's output. If that path doesn't exist yet,
+# run the three-step pre-pipeline to build it from $REFERENCE.
+if [[ -z "$NOALT_REFERENCE" ]]; then
+    REF_DIR="$(dirname "$REFERENCE")"
+    REF_PARENT="$(dirname "$REF_DIR")"
+    REF_STEM="$(basename "$REFERENCE")"; REF_STEM="${REF_STEM%.fa}"; REF_STEM="${REF_STEM%.fasta}"
+    NOALT_REFERENCE="$REF_PARENT/$(basename "$REF_DIR")_cleaned/${REF_STEM}_no_alt_haplotypes.fa"
+fi
+
+if [[ ! -f "$NOALT_REFERENCE" ]]; then
+    echo "[bench] noAlt reference not found at $NOALT_REFERENCE — running pre-pipeline to build it."
+    PRE_DIR="$(dirname "$NOALT_REFERENCE")/prepipeline"
+    mkdir -p "$PRE_DIR" "$(dirname "$NOALT_REFERENCE")"
+
+    python "$REPO_ROOT/scripts/scaffold_haplotype_analyzer.py" \
+        -r "$REFERENCE" \
+        -o "$PRE_DIR" \
+        -t "$THREADS"
+
+    python "$REPO_ROOT/scripts/filter_scaffold_haplotypes.py" \
+        -i "$PRE_DIR/scaffold_summary.tsv" \
+        -o "$PRE_DIR/alt_haplotype_candidates.tsv"
+
+    python "$REPO_ROOT/scripts/exclude_alt_haplotypes.py" \
+        --scaffolds "$PRE_DIR/alt_haplotype_candidates.tsv" \
+        --reference "$REFERENCE" \
+        --output-dir "$(dirname "$NOALT_REFERENCE")"
+fi
+[[ -f "$NOALT_REFERENCE" ]] || { echo "ERROR: noAlt reference still missing after auto-build: $NOALT_REFERENCE"; exit 1; }
+echo "[bench] Using noAlt reference: $NOALT_REFERENCE"
 
 # ── Step 1: prepare inputs ───────────────────────────────────────────────────
 echo ""
@@ -125,6 +166,24 @@ ALLELE_MAP_DEFAULT="$OURS_DIR/qc/${PREFIX}_allele_map_equCab3.tsv"
 ALLELE_MAP_STRICT="$OURS_DIR/qc_strict/${PREFIX}_allele_map_equCab3.tsv"
 ALLELE_MAP_PERMISSIVE="$OURS_DIR/qc_permissive/${PREFIX}_allele_map_equCab3.tsv"
 
+# ── Step 2d: our pipeline against the noAlt reference (--preset permissive) ──
+# This is a full re-run (new minimap2 alignment) because the reference differs.
+# Output lands in a sibling 'ours_noAlt/' so temp/remapping don't collide with
+# the raw-genome arms.
+OURS_NOALT_DIR="$OUTPUT_DIR/ours_noAlt"
+mkdir -p "$OURS_NOALT_DIR"
+echo ""
+echo "[bench] Step 2d: run our pipeline against noAlt reference (--preset permissive)"
+bash "$REPO_ROOT/run_pipeline.sh" \
+    -i "$SUBSET_MANIFEST" \
+    -r "$NOALT_REFERENCE" \
+    -a equCab3 \
+    -o "$OURS_NOALT_DIR" \
+    -t "$THREADS" \
+    --preset permissive \
+    $RESUME
+ALLELE_MAP_PERMISSIVE_NOALT="$OURS_NOALT_DIR/qc/${PREFIX}_allele_map_equCab3.tsv"
+
 # ── Step 3: liftOver ─────────────────────────────────────────────────────────
 echo ""
 echo "[bench] Step 3: run liftOver"
@@ -148,7 +207,7 @@ fi
 echo "[bench] CrossMap: $(wc -l < "$CROSS_DIR/lifted.bed") mapped,"\
 " $(grep -vc "^#" "$CROSS_DIR/unmapped.bed" || true) unmapped"
 
-# ── Step 5: five-way comparison (3 presets × ours + liftOver + CrossMap) ─────
+# ── Step 5: six-way comparison (4 ours arms + liftOver + CrossMap) ───────────
 echo ""
 echo "[bench] Step 5: multi-preset comparison"
 python "$SCRIPT_DIR/benchmark_vs_liftover.py" \
@@ -156,6 +215,7 @@ python "$SCRIPT_DIR/benchmark_vs_liftover.py" \
     --ours              "strict:$ALLELE_MAP_STRICT" \
     --ours              "default:$ALLELE_MAP_DEFAULT" \
     --ours              "permissive:$ALLELE_MAP_PERMISSIVE" \
+    --ours              "permissive_noAlt:$ALLELE_MAP_PERMISSIVE_NOALT" \
     --liftover-lifted   "$LIFT_DIR/lifted.bed" \
     --liftover-unmapped "$LIFT_DIR/unmapped.bed" \
     --crossmap-lifted   "$CROSS_DIR/lifted.bed" \
