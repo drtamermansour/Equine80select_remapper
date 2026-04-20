@@ -39,7 +39,11 @@
 #   --preset      Tune strictness+threshold+include flags together:
 #                 strict / default / permissive. Individual flags override.
 #   --keep-temp   Keep intermediate FASTA/SAM files
-#   --resume      Skip step 2 if remapped CSV and SAM files already exist
+#   --resume      Reuse existing minimap2 SAM files in --temp-dir; skip alignment
+#                 only, but still re-run the downstream remap_manifest.py logic
+#                 (coordinate resolution, Ref/Alt determination) so the remapped
+#                 CSV and remapping_Report.txt reflect the current code. Same
+#                 semantics as `remap_manifest.py --resume`.
 #   -h / --help   Show this help message
 #
 # Example:
@@ -174,19 +178,25 @@ if [[ ! -f "$VCF_CONTIGS" ]]; then
 fi
 
 # ── Step 2: Core remapping (Python) ──────────────────────────────────────────
+# --resume here mirrors remap_manifest.py's --resume semantics: if SAMs already
+# exist in --temp-dir, skip the minimap2 alignment step but always re-run the
+# downstream processing (valid-triple filtering, coordinate resolution, Ref/Alt
+# determination) so the remapped CSV, remapping_Report.txt, and sidecar CSVs
+# reflect the current code. Earlier this branch skipped remap_manifest.py
+# entirely when the CSV existed; that made report-text changes invisible after
+# re-runs, which was a silent footgun.
 echo ""
-if [[ -n "$RESUME" && -f "$REMAPPED_CSV" ]]; then
-    echo "[pipeline] Step 2: Skipping remap_manifest.py (--resume: $REMAPPED_CSV already exists)"
-else
-    echo "[pipeline] Step 2: Running remap_manifest.py..."
-    python "$SCRIPT_DIR/scripts/remap_manifest.py" \
-        -i  "$MANIFEST" \
-        -r  "$REFERENCE" \
-        -o  "$REMAPPED_CSV" \
-        -a  "$ASSEMBLY" \
-        --threads "$THREADS" \
-        --temp-dir "$TEMP_DIR"
-fi
+echo "[pipeline] Step 2: Running remap_manifest.py..."
+RESUME_ARG=()
+[[ -n "$RESUME" ]] && RESUME_ARG=(--resume)
+python "$SCRIPT_DIR/scripts/remap_manifest.py" \
+    -i  "$MANIFEST" \
+    -r  "$REFERENCE" \
+    -o  "$REMAPPED_CSV" \
+    -a  "$ASSEMBLY" \
+    --threads "$THREADS" \
+    --temp-dir "$TEMP_DIR" \
+    "${RESUME_ARG[@]}"
 
 # ── Step 3: QC filtering and output generation (Python) ──────────────────────
 # Only pass strictness/threshold flags the user actually supplied; otherwise let
