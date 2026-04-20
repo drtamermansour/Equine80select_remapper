@@ -943,6 +943,17 @@ def determine_ref_alt_v2(winning_allele, winning_ts, ts_aligns,
 
 # ── DECISION COUNTERS ─────────────────────────────────────────────────────────
 
+def _mapq_bucket(mapq) -> str:
+    """Return 60 / 30_59 / 1_29 / 0 — the bucket suffix for a MAPQ value."""
+    if mapq == 60:
+        return "60"
+    if mapq >= 30:
+        return "30_59"
+    if mapq >= 1:
+        return "1_29"
+    return "0"
+
+
 @dataclass
 class DecisionCounters:
     """
@@ -998,17 +1009,26 @@ class DecisionCounters:
     refalt_unresolved_main:  int = 0   # tie=unique|*_resolved + RefAlt=refalt_unresolved (topseq_n_probe main path)
     ref_base_mismatch:       int = 0
     strand_agreement_unexpected: int = 0   # StrandAgreementAsExpected == False
-    # MAPQ distribution (topseq_n_probe winners only)
-    mapq_60:                 int = 0
-    mapq_30_59:              int = 0
-    mapq_1_29:               int = 0
-    mapq_0:                  int = 0
-    # CoordDelta distribution (topseq_n_probe winners only)
+    # MAPQ distributions — one per column, across every Chr≠0 marker that has the
+    # column populated (TopSeq: topseq_n_probe + topseq_only; Probe: topseq_n_probe
+    # + probe_only). The old "min of winning pair" stat was a synthetic topseq_n_probe-only
+    # summary; replaced with per-column distributions for clearer semantics.
+    ts_mapq_60:              int = 0
+    ts_mapq_30_59:           int = 0
+    ts_mapq_1_29:            int = 0
+    ts_mapq_0:               int = 0
+    pb_mapq_60:              int = 0
+    pb_mapq_30_59:           int = 0
+    pb_mapq_1_29:            int = 0
+    pb_mapq_0:               int = 0
+    # CoordDelta distribution (topseq_n_probe winners only — -1 sentinel dominates
+    # the other anchors so expansion would dilute signal).
     coord_delta_0:           int = 0   # probe == cigar exactly
     coord_delta_1:           int = 0   # small discrepancy → probe used
     coord_delta_ge2:         int = 0   # large discrepancy (≥2 bp) → cigar used
     coord_delta_neg1:        int = 0   # CIGAR unavailable (SNP in soft clip)
-    # CoordSource breakdown (topseq_n_probe winners only)
+    # CoordSource breakdown — counts every Chr≠0 marker (topseq_n_probe selection
+    # cascade + topseq_only rescue = topseq_cigar + probe_only rescue = probe_cigar).
     coord_source_probe:      int = 0   # MapInfo = probe coord
     coord_source_cigar:      int = 0   # MapInfo = cigar coord (CoordDelta≥2 or indel)
     # final outcome counts
@@ -1052,8 +1072,12 @@ class DecisionCounters:
             return 0
 
         # \u2500\u2500 derived totals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        # mapq_total == topseq_n_probe Chr\u22600 == valid_pair_found - position_unresolved - refalt_unresolved_main
-        mapq_total        = self.mapq_60 + self.mapq_30_59 + self.mapq_1_29 + self.mapq_0
+        # mapq_total == topseq_n_probe Chr\u22600 (the one bucket that carries BOTH alignments).
+        # Derived from the triple-filter counters rather than the MAPQ buckets so that
+        # splitting MAPQ into per-column distributions doesn't affect this total.
+        mapq_total        = (self.valid_pair_found
+                             - self.position_unresolved
+                             - self.refalt_unresolved_main)
         topseq_only_total = self.final_topseq_only + self.final_topseq_only_unresolved
         probe_only_total  = self.final_probe_only  + self.final_probe_only_unresolved
         total_check       = (self.valid_pair_found + topseq_only_total
@@ -1140,28 +1164,56 @@ class DecisionCounters:
             f"  = {self.valid_pair_found:,} total \u2212 {self.position_unresolved:,} "
             f"tie=locus_unresolved \u2212 {self.refalt_unresolved_main:,} Ref/Alt=refalt_unresolved"
         )
-        lines.append("")
-        lines.append("  MAPQ Distribution (min of winning TopSeq+probe pair):")
         lines.append(
-            f"    (denominator {mapq_total:,} = topseq_n_probe Chr\u22600 \u2014 MAPQ is only "
-            f"reported for markers that got Ref/Alt assigned)"
+            "  Each sub-section states its own scope and denominator — MAPQ distributions"
         )
-        row("MAPQ = 60:",   self.mapq_60,    indent=1)
-        row("MAPQ 30\u201359:", self.mapq_30_59, indent=1)
-        row("MAPQ  1\u201329:", self.mapq_1_29,  indent=1)
-        row("MAPQ = 0:",    self.mapq_0,     indent=1)
+        lines.append(
+            "  cover Chr\u22600 markers with the given column; CoordDelta/Ref-Alt stats are"
+        )
+        lines.append(
+            "  topseq_n_probe-only; CoordSource covers every Chr\u22600 marker."
+        )
+        lines.append("")
+        # MAPQ distributions — one per column (each has its own denominator).
+        ts_mapq_total = self.ts_mapq_60 + self.ts_mapq_30_59 + self.ts_mapq_1_29 + self.ts_mapq_0
+        pb_mapq_total = self.pb_mapq_60 + self.pb_mapq_30_59 + self.pb_mapq_1_29 + self.pb_mapq_0
+        lines.append(f"  MAPQ_TopGenomicSeq Distribution (of {ts_mapq_total:,} markers):")
+        lines.append(
+            f"    (denominator {ts_mapq_total:,} = topseq_n_probe Chr\u22600 + topseq_only Chr\u22600 "
+            f"\u2014 every Chr\u22600 marker with a TopSeq alignment)"
+        )
+        row("MAPQ = 60:",   self.ts_mapq_60,    indent=1)
+        row("MAPQ 30\u201359:", self.ts_mapq_30_59, indent=1)
+        row("MAPQ  1\u201329:", self.ts_mapq_1_29,  indent=1)
+        row("MAPQ = 0:",    self.ts_mapq_0,     indent=1)
+        lines.append("")
+        lines.append(f"  MAPQ_Probe Distribution (of {pb_mapq_total:,} markers):")
+        lines.append(
+            f"    (denominator {pb_mapq_total:,} = topseq_n_probe Chr\u22600 + probe_only Chr\u22600 "
+            f"\u2014 every Chr\u22600 marker with a probe alignment)"
+        )
+        row("MAPQ = 60:",   self.pb_mapq_60,    indent=1)
+        row("MAPQ 30\u201359:", self.pb_mapq_30_59, indent=1)
+        row("MAPQ  1\u201329:", self.pb_mapq_1_29,  indent=1)
+        row("MAPQ = 0:",    self.pb_mapq_0,     indent=1)
         lines.append("")
         lines.append(f"  CoordDelta Distribution (of {coord_diag_total:,} markers):")
         lines.append(
             f"    (denominator {coord_diag_total:,} = all topseq_n_probe regardless of Ref/Alt "
-            f"outcome \u2014 CoordDelta is computed before Ref/Alt determination)"
+            f"outcome \u2014 CoordDelta is computed before Ref/Alt determination; "
+            f"topseq_only / probe_only markers always carry -1 and are not shown here)"
         )
         row("CoordDelta = 0    (probe = cigar):",              self.coord_delta_0,    indent=1)
         row("CoordDelta = 1    (small diff \u2192 probe_cigar used):",  self.coord_delta_1,    indent=1)
         row("CoordDelta \u2265 2    (large diff \u2192 topseq_cigar used):", self.coord_delta_ge2,  indent=1)
         row("CoordDelta = \u22121   (SNP in soft clip, no topseq cigar):", self.coord_delta_neg1, indent=1)
         lines.append("")
-        lines.append("  CoordSource Breakdown (same denominator as CoordDelta):")
+        cs_total = self.coord_source_probe + self.coord_source_cigar
+        lines.append(f"  CoordSource Breakdown (of {cs_total:,} Chr\u22600 markers):")
+        lines.append(
+            f"    (denominator {cs_total:,} = every Chr\u22600 marker across all anchors; "
+            f"topseq_only always contributes to topseq_cigar, probe_only always to probe_cigar)"
+        )
         row("probe_cigar  (MapInfo = probe CIGAR coord):",  self.coord_source_probe, indent=1)
         row("topseq_cigar (MapInfo = TopSeq CIGAR coord):", self.coord_source_cigar, indent=1)
         lines.append("")
@@ -1562,6 +1614,11 @@ def run_remapping(args):
                     new_cols[col_tie].append(ts_tie)
                     new_cols[col_refalt_agree].append(refalt_agree)
                     counters.final_topseq_only += 1
+                    # topseq_only rescue contributes to the TopSeq MAPQ distribution
+                    # and to the topseq_cigar half of the CoordSource breakdown.
+                    setattr(counters, f"ts_mapq_{_mapq_bucket(best_ts['MAPQ'])}",
+                            getattr(counters, f"ts_mapq_{_mapq_bucket(best_ts['MAPQ'])}") + 1)
+                    counters.coord_source_cigar += 1
                     if ts_tie == "unique":              counters.topseq_rescue_tie_unique   += 1
                     elif ts_tie == "AS_resolved":       counters.topseq_rescue_tie_as       += 1
                     elif ts_tie == "dAS_resolved":      counters.topseq_rescue_tie_das      += 1
@@ -1678,6 +1735,11 @@ def run_remapping(args):
                     new_cols[col_tie].append(pb_tie)
                     new_cols[col_refalt_agree].append(refalt_agree)
                     counters.final_probe_only += 1
+                    # probe_only rescue contributes to the Probe MAPQ distribution
+                    # and to the probe_cigar half of the CoordSource breakdown.
+                    setattr(counters, f"pb_mapq_{_mapq_bucket(best_pb['MAPQ'])}",
+                            getattr(counters, f"pb_mapq_{_mapq_bucket(best_pb['MAPQ'])}") + 1)
+                    counters.coord_source_probe += 1
                     if pb_tie == "unique":              counters.probe_rescue_tie_unique   += 1
                     elif pb_tie == "AS_resolved":       counters.probe_rescue_tie_as       += 1
                     elif pb_tie == "dAS_resolved":      counters.probe_rescue_tie_das      += 1
@@ -1812,12 +1874,12 @@ def run_remapping(args):
                     ref_base_match_str = "False"
                     counters.ref_base_mismatch += 1
 
-            # MAPQ distribution counter (kept for report)
-            min_mapq = min(winning_ts["MAPQ"], winning_pb["MAPQ"])
-            if min_mapq == 60:   counters.mapq_60    += 1
-            elif min_mapq >= 30: counters.mapq_30_59 += 1
-            elif min_mapq >= 1:  counters.mapq_1_29  += 1
-            else:                counters.mapq_0     += 1
+            # MAPQ distribution — bucket each column independently. topseq_n_probe
+            # markers contribute to both ts_mapq_* and pb_mapq_* distributions.
+            setattr(counters, f"ts_mapq_{_mapq_bucket(winning_ts['MAPQ'])}",
+                    getattr(counters, f"ts_mapq_{_mapq_bucket(winning_ts['MAPQ'])}") + 1)
+            setattr(counters, f"pb_mapq_{_mapq_bucket(winning_pb['MAPQ'])}",
+                    getattr(counters, f"pb_mapq_{_mapq_bucket(winning_pb['MAPQ'])}") + 1)
 
             new_cols[col_chr].append(winning_ts["Chr"])
             new_cols[col_pos].append(final_pos)
