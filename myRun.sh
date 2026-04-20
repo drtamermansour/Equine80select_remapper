@@ -42,6 +42,11 @@ python scripts/filter_scaffold_haplotypes.py \
 	-o genomes/equCab3_scaffold_haplotype_analysis/alt_haplotype_candidates.tsv \
 	--min-identity 90 --min-query-cov 80 --max-span-ratio 3 --min-mapq 30 --max-blocks 5    
 
+python scripts/exclude_alt_haplotypes.py \
+    --scaffolds genomes/equCab3_scaffold_haplotype_analysis/alt_haplotype_candidates.tsv \
+    --reference genomes/equCab3/equCab3_genome.fa \
+    --output-dir genomes/equCab3_cleaned/   ## Removing 613 sequences → 4,088 retained ## cleaned FASTA: equCab3_cleaned/equCab3_genome_no_alt_haplotypes.fa
+
 
 ## This script is wrapper for "scripts/remap_manifest.py"
 ## Detailed pseudo-code for remap_manifest.py can be found in scripts/remap_manifest_psCode.txt
@@ -52,15 +57,50 @@ python scripts/filter_scaffold_haplotypes.py \
 ## Ref_EquCab3 & Alt_EquCab3: chosen from alleleA and alleleB obtained from 'TopGenomicSeq' e.g., "AGCT[A/G]TCGA"
 ## MAPQ_TopGenomicSeq: Mapping Quality score directly from the minimap2 alignment of the winning TopGenomicSeq candidate.
 ## MAPQ_Probe: The Mapping Quality score of the selected probe alignment. If no valid probe overlap was found (fallback used), this is set to 0.
+#bash run_pipeline.sh \
+#    --manifest manifests/Equine80select_24_20067593_B1.csv \
+#    --reference genomes/equCab3/equCab3_genome.fa \
+#    --assembly equCab3 \
+#    --threads 64 \
+#    --keep-temp \
+#    --min-mapq-topseq 1 \
+#    --resume \
+#    --output-dir results_E80selv1_to_equCab3/
+
+output_dir="results_E80selv2_to_equCab3noAlt_genDiv"
+
 bash run_pipeline.sh \
-    --manifest manifests/Equine80select_24_20067593_B1.csv \
-    --reference genomes/equCab3/equCab3_genome.fa \
-    --assembly equCab3 \
+    --manifest manifests/Equine80select_v2_1_HTS_20143333_B1_UCD.csv \
+    --reference genomes/equCab3_cleaned/equCab3_genome_no_alt_haplotypes.fa \
+    --assembly equCab3noAlt \
     --threads 64 \
     --keep-temp \
-    --min-mapq-topseq 1 \
     --resume \
-    --output-dir results_E80selv1_to_equCab3/
+    --output-dir "$output_dir" \
+    --min-anchor topseq \
+    --tie-policy avoid_scaffolds \
+    --min-refalt-confidence low \
+    --min-mapq-topseq 1
+#    --preset permissive
+
+
+## Running the Tests
+pytest tests/ -v --manifest manifests/Equine80select_v2_1_HTS_20143333_B1_UCD.csv --results-dir "$output_dir"
+
+
+## Benchmarking Remapping Accuracy
+python scripts/benchmark_compare.py \
+    --manifest  manifests/Equine80select_v2_1_HTS_20143333_B1_UCD.csv \
+    --remapped  "$output_dir"/remapping/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3noAlt.csv \
+    --reference genomes/equCab3_cleaned/equCab3_genome_no_alt_haplotypes.fa \
+    --traced "$output_dir"/qc/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3noAlt_traced.csv \
+    --output-dir "$output_dir"/benchmark/
+
+## compare accuracy of different coordinate systems 
+python scripts/benchmark_cigar_vs_probe.py \
+    --manifest  manifests/Equine80select_v2_1_HTS_20143333_B1_UCD.csv \
+    --remapped  "$output_dir"/remapping/Equine80select_v2_1_HTS_20143333_B1_UCD_remapped_equCab3noAlt.csv \
+    --output-dir "$output_dir"/benchmark/
 
 
 
